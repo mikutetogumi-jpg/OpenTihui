@@ -1,0 +1,90 @@
+name: iOS unsigned build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build unsigned iPhone app
+    runs-on: macos-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out source and llama.cpp
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Record toolchain
+        run: |
+          set -euxo pipefail
+          xcodebuild -version
+          swift --version
+          cmake --version
+
+      - name: Build llama.cpp XCFramework
+        run: |
+          set -o pipefail
+          make framework 2>&1 | tee llama-framework-build.log
+
+      - name: Build unsigned device app
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project openTihui.xcodeproj \
+            -scheme openTihui \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build-ci \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            build 2>&1 | tee xcodebuild.log
+
+      - name: Package unsigned IPA
+        run: |
+          set -euxo pipefail
+          APP_PATH='build-ci/Build/Products/Release-iphoneos/openTihui.app'
+          test -d "$APP_PATH"
+          STAGE_DIR="$(mktemp -d)"
+          mkdir -p "$STAGE_DIR/Payload"
+          ditto "$APP_PATH" "$STAGE_DIR/Payload/openTihui.app"
+          (
+            cd "$STAGE_DIR"
+            /usr/bin/zip -qry "$GITHUB_WORKSPACE/openTihui-unsigned.ipa" Payload
+          )
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" openTihui-unsigned-app.zip
+
+      - name: Upload unsigned build
+        uses: actions/upload-artifact@v4
+        with:
+          name: openTihui-unsigned-${{ github.run_number }}
+          path: |
+            openTihui-unsigned.ipa
+            openTihui-unsigned-app.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openTihui-build-logs-${{ github.run_number }}
+          path: |
+            llama-framework-build.log
+            xcodebuild.log
+          if-no-files-found: warn
+          retention-days: 14

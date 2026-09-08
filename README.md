@@ -193,6 +193,12 @@ To work in Xcode directly: run `make framework` once, then `open
 openTihui.xcodeproj`, pick the `openTihui` scheme, and set your signing team for
 on-device runs.
 
+For a Windows-only workflow, fork this repository and run the
+**iOS unsigned build** GitHub Action. It produces an unsigned IPA and an
+unsigned `.app` archive; see [WINDOWS_SETUP.md](WINDOWS_SETUP.md) for the
+GitHub Desktop → Actions → Sideloadly steps. Current verification status and
+known blockers are recorded in [STATUS.md](STATUS.md).
+
 ## Project layout
 
 ```

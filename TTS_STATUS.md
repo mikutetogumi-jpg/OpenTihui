@@ -26,7 +26,7 @@ No Hugging Face download code was added in this round. TTS model directories are
 - `TTSModelManager.swift`: dedicated `Documents/TTSModels` store, validation, list, current selection, metadata, size, and deletion. It does not use the GGUF model list.
 - `AudioPlayer.swift`: AVFoundation playback and stop.
 - `TTSDebugView.swift`: Settings → Developer / Experimental → Qwen3-TTS Test.
-- `ReferenceAudioLoader.swift`: decodes a selected WAV and converts it to the package speaker encoder's preferred 16 kHz mono Float32 samples.
+- `ReferenceAudioLoader.swift`: decodes a selected WAV and converts it to 24 kHz mono Float32 samples, matching the sample rate used internally by the pinned package's speaker encoder.
 - `VoiceProfileStore.swift`: saves the reference WAV, exact transcript, language, and extracted speaker embedding under `Documents/VoiceProfiles`.
 
 ## Model directory format
@@ -52,8 +52,8 @@ Test model: `mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit`. The real-device smoke
 ## Voice Clone test path
 
 1. Load the Base TTS model.
-2. Select a clean 5–10 second local WAV and enter its exact transcript.
-3. Extract and save a Voice Profile. The package receives 16 kHz mono samples and returns the stored speaker embedding.
+2. Select a clean 2–8 second local WAV and enter its exact transcript.
+3. Extract and save a Voice Profile. The package receives 24 kHz mono samples and returns the stored speaker embedding.
 4. Select the saved profile and generate a short target sentence.
 5. The embedding is passed to the package's existing `generateToFile` API; no MLX inference implementation is duplicated in the app.
 

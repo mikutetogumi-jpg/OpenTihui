@@ -114,7 +114,9 @@ final class Qwen3TTSEngine: TTSEngine, @unchecked Sendable {
         let loaded = locked { pipeline }
         guard let loaded else { throw Qwen3TTSError.notLoaded }
         let embedding = await Task.detached(priority: .userInitiated) {
-            loaded.extractSpeakerEmbedding(audioSamples: audioSamples)
+            autoreleasepool {
+                loaded.extractSpeakerEmbedding(audioSamples: audioSamples)
+            }
         }.value
         guard let embedding, !embedding.isEmpty else {
             throw Qwen3TTSError.speakerEmbeddingUnavailable

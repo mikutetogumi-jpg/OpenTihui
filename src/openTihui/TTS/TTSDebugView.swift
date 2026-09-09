@@ -8,6 +8,9 @@ import UniformTypeIdentifiers
 
 @MainActor
 final class TTSDebugViewModel: ObservableObject {
+    private static let persistedLogKey = "openTihui.ttsDebug.recentLog"
+    private static let maximumPersistedLogLines = 80
+
     @Published var text = "你好，这是 Qwen3-TTS 在 iPhone 上运行的本地语音测试。"
     @Published var language: TTSLanguage = .automatic
     @Published var speaker = ""
@@ -32,6 +35,10 @@ final class TTSDebugViewModel: ObservableObject {
     private var workTask: Task<Void, Never>?
     private var memorySampler: Task<Void, Never>?
     private var lowestAvailableBytes: UInt64?
+
+    init() {
+        logLines = UserDefaults.standard.stringArray(forKey: Self.persistedLogKey) ?? []
+    }
 
     func load(_ model: TTSModelInfo, chat: ChatViewModel) {
         guard !isLoading, !isGenerating, !isExtractingVoice else { return }
@@ -96,8 +103,13 @@ final class TTSDebugViewModel: ObservableObject {
         workTask = Task {
             do {
                 let audio = try await ReferenceAudioLoader.loadForSpeakerEmbedding(from: referenceAudioURL)
-                append("Reference WAV decoded — \(format(audio.duration)) s, \(audio.samples.count) samples at 16 kHz")
+                append("Reference WAV decoded — \(format(audio.duration)) s, \(audio.samples.count) samples at 24 kHz")
+                appendMemory("Before speaker embedding cache clear", bytes: availableMemory())
+                await engine.clearCache()
+                appendMemory("Before speaker embedding eval", bytes: availableMemory())
+                append("Entering Qwen3-TTS speaker encoder")
                 let embedding = try await engine.extractSpeakerEmbedding(audioSamples: audio.samples)
+                appendMemory("After speaker embedding eval", bytes: availableMemory())
                 let profile = try await store.create(
                     name: trimmedName,
                     referenceAudio: referenceAudioURL,
@@ -241,6 +253,13 @@ final class TTSDebugViewModel: ObservableObject {
     private func append(_ line: String) {
         let entry = "[\(Date().formatted(date: .omitted, time: .standard))] \(line)"
         logLines.append(entry)
+        if logLines.count > Self.maximumPersistedLogLines {
+            logLines.removeFirst(logLines.count - Self.maximumPersistedLogLines)
+        }
+        UserDefaults.standard.set(logLines, forKey: Self.persistedLogKey)
+        // This log is intentionally flushed because a native Metal failure can terminate
+        // the process before Swift has a chance to present or persist an error.
+        UserDefaults.standard.synchronize()
         LlamaBridge.appendLogNote("openTihui TTS Debug: \(line)")
     }
 

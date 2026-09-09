@@ -13,7 +13,9 @@ struct ReferenceAudioData: Sendable {
 
 enum ReferenceAudioError: LocalizedError {
     case empty
+    case tooShort
     case tooLong
+    case silent
     case unsupportedFormat
     case conversionFailed(String)
 
@@ -21,8 +23,12 @@ enum ReferenceAudioError: LocalizedError {
         switch self {
         case .empty:
             return "The reference WAV contains no audio."
+        case .tooShort:
+            return "Use a reference WAV that is at least 2 seconds long."
         case .tooLong:
-            return "Keep the reference WAV under 30 seconds for this device test."
+            return "Use a 2–8 second reference WAV for this device test."
+        case .silent:
+            return "The reference WAV is silent or contains invalid samples."
         case .unsupportedFormat:
             return "The reference audio could not be converted to mono PCM. Use a normal WAV file."
         case .conversionFailed(let message):
@@ -32,7 +38,8 @@ enum ReferenceAudioError: LocalizedError {
 }
 
 enum ReferenceAudioLoader {
-    /// The package's speaker encoder expects raw samples and recommends 16 kHz.
+    /// Qwen3TTS 0.2.0's public wrapper accepts raw samples, while its speaker
+    /// encoder currently interprets them at its 24 kHz default sample rate.
     static func loadForSpeakerEmbedding(from url: URL) async throws -> ReferenceAudioData {
         try await Task.detached(priority: .userInitiated) {
             let didAccess = url.startAccessingSecurityScopedResource()
@@ -44,7 +51,8 @@ enum ReferenceAudioLoader {
                 throw ReferenceAudioError.empty
             }
             let duration = Double(file.length) / sourceFormat.sampleRate
-            guard duration <= 30 else { throw ReferenceAudioError.tooLong }
+            guard duration >= 2 else { throw ReferenceAudioError.tooShort }
+            guard duration <= 8 else { throw ReferenceAudioError.tooLong }
 
             guard let sourceBuffer = AVAudioPCMBuffer(
                 pcmFormat: sourceFormat,
@@ -54,7 +62,7 @@ enum ReferenceAudioLoader {
 
             guard let targetFormat = AVAudioFormat(
                 commonFormat: .pcmFormatFloat32,
-                sampleRate: 16_000,
+                sampleRate: 24_000,
                 channels: 1,
                 interleaved: false
             ), let converter = AVAudioConverter(from: sourceFormat, to: targetFormat) else {
@@ -92,6 +100,9 @@ enum ReferenceAudioLoader {
                 count: Int(targetBuffer.frameLength)
             ))
             guard !samples.isEmpty else { throw ReferenceAudioError.empty }
+            guard samples.contains(where: { $0.isFinite && abs($0) > 0.0001 }) else {
+                throw ReferenceAudioError.silent
+            }
             return ReferenceAudioData(samples: samples, duration: duration)
         }.value
     }

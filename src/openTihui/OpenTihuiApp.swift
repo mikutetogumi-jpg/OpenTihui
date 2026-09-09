@@ -15,6 +15,7 @@ struct OpenTihuiApp: App {
     @StateObject private var shortcuts = ShortcutStore()
     @StateObject private var remotes = RemoteStore()
     @StateObject private var downloads = DownloadManager()
+    @StateObject private var ttsModels = TTSModelManager()
     @StateObject private var compose = ComposeBridge()
     @StateObject private var chat: ChatViewModel
     @State private var importedShortcutName: String?
@@ -39,6 +40,7 @@ struct OpenTihuiApp: App {
                 .environmentObject(shortcuts)
                 .environmentObject(remotes)
                 .environmentObject(downloads)
+                .environmentObject(ttsModels)
                 .environmentObject(compose)
                 .environmentObject(chat)
                 .task {

@@ -57,6 +57,16 @@ struct SettingsView: View {
                 Button("Reset Shortcuts to Default", role: .destructive) { confirmReset = true }
             }
 
+            Section("Developer / Experimental") {
+                NavigationLink {
+                    TTSDebugView()
+                } label: {
+                    Label("Qwen3-TTS Test", systemImage: "waveform.badge.magnifyingglass")
+                }
+            } footer: {
+                Text("Standalone real-device smoke test. TTS is not connected to chat or Voice Profiles yet.")
+            }
+
             Section("About") {
                 LabeledContent("Engine", value: "llama.cpp")
                 // GPU (Metal) is used automatically when the device supports it.
@@ -99,6 +109,8 @@ struct SettingsView: View {
                                 url: "https://github.com/ggml-org/llama.cpp/blob/master/LICENSE")
                 acknowledgement("ggml", license: "MIT License",
                                 url: "https://github.com/ggml-org/ggml/blob/master/LICENSE")
+                acknowledgement("mlx-swift-qwen3-tts", license: "Apache License 2.0",
+                                url: "https://github.com/hamptus/mlx-swift-qwen3-tts/blob/main/LICENSE")
             } header: {
                 Text("Acknowledgements")
             } footer: {

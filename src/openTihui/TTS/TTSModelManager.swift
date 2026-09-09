@@ -134,7 +134,6 @@ final class TTSModelManager: ObservableObject {
         let required = [
             "config.json",
             "model.safetensors",
-            "tokenizer.json",
             "speech_tokenizer/config.json",
             "speech_tokenizer/model.safetensors"
         ]
@@ -142,6 +141,22 @@ final class TTSModelManager: ObservableObject {
             atPath: directory.appendingPathComponent(path).path
         ) {
             throw TTSModelImportError.missingFile(path)
+        }
+
+        // Qwen3Tokenizer supports either the consolidated tokenizer.json or
+        // the Hugging Face BPE pair used by the official MLX conversion.
+        let hasConsolidatedTokenizer = FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent("tokenizer.json").path
+        )
+        let hasSplitTokenizer = ["vocab.json", "merges.txt"].allSatisfy { path in
+            FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent(path).path
+            )
+        }
+        guard hasConsolidatedTokenizer || hasSplitTokenizer else {
+            throw TTSModelImportError.missingFile(
+                "tokenizer.json or both vocab.json and merges.txt"
+            )
         }
     }
 

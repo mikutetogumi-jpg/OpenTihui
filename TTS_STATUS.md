@@ -34,10 +34,14 @@ Import a directory containing at least:
 ```text
 config.json
 model.safetensors
-tokenizer.json
 speech_tokenizer/config.json
 speech_tokenizer/model.safetensors
 ```
+
+The text tokenizer may use either `tokenizer.json`, or the split Hugging Face
+BPE files `vocab.json` and `merges.txt`. `tokenizer_config.json` is optional
+metadata consumed by the package when present. The suggested official 0.6B
+MLX model uses the split BPE layout.
 
 The actual model format is a directory. ZIP import was deliberately not added because the selected package does not consume archives and adding an unzip dependency is not necessary for the smoke test.
 

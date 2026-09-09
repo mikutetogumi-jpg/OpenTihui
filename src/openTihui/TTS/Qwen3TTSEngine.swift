@@ -24,8 +24,7 @@ final class Qwen3TTSEngine: TTSEngine, @unchecked Sendable {
     private var generationTask: Task<Int, Error>?
 
     var isLoaded: Bool {
-        lock.lock(); defer { lock.unlock() }
-        return pipeline != nil
+        locked { pipeline != nil }
     }
 
     func loadModel(at directory: URL) async throws -> TTSLoadResult {
@@ -40,7 +39,7 @@ final class Qwen3TTSEngine: TTSEngine, @unchecked Sendable {
             availableSpeakers: loaded.availableSpeakers.sorted(),
             supportsVoiceCloning: loaded.supportsVoiceCloning
         )
-        lock.lock(); pipeline = loaded; lock.unlock()
+        locked { pipeline = loaded }
         LlamaBridge.appendLogNote(
             "openTihui TTS: load completed — \(String(format: "%.2f", result.elapsed)) s, " +
             "speakers = \(result.availableSpeakers.count), voice clone = \(result.supportsVoiceCloning)"
@@ -55,7 +54,7 @@ final class Qwen3TTSEngine: TTSEngine, @unchecked Sendable {
     ) async throws -> TTSSynthesisResult {
         let text = request.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw Qwen3TTSError.emptyText }
-        lock.lock(); let loaded = pipeline; lock.unlock()
+        let loaded = locked { pipeline }
         guard let loaded else { throw Qwen3TTSError.notLoaded }
 
         try? FileManager.default.removeItem(at: outputURL)
@@ -73,9 +72,9 @@ final class Qwen3TTSEngine: TTSEngine, @unchecked Sendable {
                 onProgress: { value in onProgress(Int((value * 100).rounded())) }
             )
         }
-        lock.lock(); generationTask = task; lock.unlock()
+        locked { generationTask = task }
         defer {
-            lock.lock(); generationTask = nil; lock.unlock()
+            locked { generationTask = nil }
         }
         let count = try await withTaskCancellationHandler {
             try await task.value
@@ -98,16 +97,13 @@ final class Qwen3TTSEngine: TTSEngine, @unchecked Sendable {
     }
 
     func stop() {
-        lock.lock(); let task = generationTask; lock.unlock()
+        let task = locked { generationTask }
         task?.cancel()
         LlamaBridge.appendLogNote("openTihui TTS: stop requested")
     }
 
     func clearCache() async {
-        lock.lock()
-        let loaded = pipeline
-        let busy = generationTask != nil
-        lock.unlock()
+        let (loaded, busy) = locked { (pipeline, generationTask != nil) }
         guard !busy else {
             LlamaBridge.appendLogNote("openTihui TTS: cache clear deferred while generation is active")
             return
@@ -117,18 +113,23 @@ final class Qwen3TTSEngine: TTSEngine, @unchecked Sendable {
     }
 
     func unload() async {
-        lock.lock()
-        let task = generationTask
-        lock.unlock()
+        let task = locked { generationTask }
         task?.cancel()
         if let task { _ = try? await task.value }
 
-        lock.lock()
-        let loaded = pipeline
-        pipeline = nil
-        generationTask = nil
-        lock.unlock()
+        let loaded = locked {
+            let current = pipeline
+            pipeline = nil
+            generationTask = nil
+            return current
+        }
         await Task.detached(priority: .utility) { loaded?.clearCache() }.value
         LlamaBridge.appendLogNote("openTihui TTS: model unloaded and MLX cache cleared")
+    }
+
+    private func locked<T>(_ body: () throws -> T) rethrows -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return try body()
     }
 }

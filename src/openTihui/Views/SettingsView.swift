@@ -57,12 +57,14 @@ struct SettingsView: View {
                 Button("Reset Shortcuts to Default", role: .destructive) { confirmReset = true }
             }
 
-            Section("Developer / Experimental") {
+            Section {
                 NavigationLink {
                     TTSDebugView()
                 } label: {
                     Label("Qwen3-TTS Test", systemImage: "waveform.badge.magnifyingglass")
                 }
+            } header: {
+                Text("Developer / Experimental")
             } footer: {
                 Text("Standalone real-device smoke test. TTS is not connected to chat or Voice Profiles yet.")
             }

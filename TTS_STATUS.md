@@ -55,7 +55,7 @@ Suggested first memory test: `mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit` (abou
 - The Xcode project pins the TTS package at `0.2.0`.
 - GitHub Actions now explicitly resolves packages and reuses the resolved checkout for the unsigned iPhone Release build.
 - Pre-TTS baseline workflow: passed on the user's real-device build.
-- TTS integration workflow: pending the first push of this change set.
+- TTS integration workflow: passed — [GitHub Actions #7](https://github.com/mikutetogumi-jpg/OpenTihui/actions/runs/34314882548). Package resolution, MLX/Qwen3-TTS compilation, the unsigned iPhone Release build, IPA packaging, and artifact uploads all completed successfully.
 
 CI can prove package resolution and `iphoneos` compilation. It cannot honestly prove a multi-gigabyte model loads or produces audible speech on a physical iPhone. Those final smoke-test items remain pending real-device testing.
 

@@ -36,6 +36,9 @@ struct Conversation: Identifiable, Codable {
     var variables: [String: String]?       // chosen values for $vars
     var variableDefs: [PromptVariableDef]? // per-chat variable definitions (name + options)
     var variableScope: String?             // namespace for remembered values (shortcut name)
+    /// Oldest message still represented in the local model's KV context.
+    /// Optional for compatibility with conversations saved by older builds.
+    var contextStart: Int?
     var messages: [StoredMessage] = []
 }
 

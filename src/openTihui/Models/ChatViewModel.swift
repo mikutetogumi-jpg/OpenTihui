@@ -123,6 +123,9 @@ final class ChatViewModel: ObservableObject {
     /// stay visible but are dropped from the KV cache (auto-compaction). Used for
     /// M-RoPE models (Qwen-VL) where position-shift compaction isn't possible.
     private var contextStart = 0
+    /// Invalidates a replay suspended in an engine await when the user changes
+    /// conversations before that replay completes.
+    private var conversationRevision: UInt64 = 0
 
     init(engine: InferenceEngine, store: ConversationStore, models: ModelStore, remotes: RemoteStore, settings: AppSettings) {
         self.engine = engine
@@ -284,6 +287,8 @@ final class ChatViewModel: ObservableObject {
     // MARK: Conversation switching
 
     func newConversation() async {
+        conversationRevision &+= 1
+        if isGenerating && !isRemote { engine.stop() }
         genTask?.cancel()
         isGenerating = false
         currentConversationID = UUID()
@@ -307,6 +312,8 @@ final class ChatViewModel: ObservableObject {
     /// Start a fresh conversation pre-configured by a shortcut (system prompt,
     /// preferred model, generation config).
     func startShortcut(_ shortcut: Shortcut) async {
+        conversationRevision &+= 1
+        if isGenerating && !isRemote { engine.stop() }
         genTask?.cancel()
         isGenerating = false
         currentConversationID = UUID()
@@ -331,6 +338,8 @@ final class ChatViewModel: ObservableObject {
 
     func selectConversation(_ id: UUID) async {
         guard id != currentConversationID, let convo = store.conversation(id: id) else { return }
+        conversationRevision &+= 1
+        if isGenerating && !isRemote { engine.stop() }
         genTask?.cancel()
         isGenerating = false
         currentConversationID = convo.id
@@ -338,7 +347,6 @@ final class ChatViewModel: ObservableObject {
         icon = convo.icon ?? "bubble.left.fill"
         pinnedModelPath = convo.modelPath
         remoteEndpointID = convo.remoteEndpointId
-        contextStart = 0
         createdAt = convo.createdAt
         setConfig(convo.config ?? .default, systemPrompt: convo.systemPrompt)
         variableDefs = convo.variableDefs ?? []
@@ -346,6 +354,7 @@ final class ChatViewModel: ObservableObject {
         variableValues = convo.variables ?? [:]
         seedVariableDefaults()
         messages = convo.messages.map { ChatMessage(stored: $0) }
+        contextStart = min(max(convo.contextStart ?? 0, 0), messages.count)
         // Lazy: replay only if the resolved model is already loaded; otherwise wait
         // for an explicit Load / first keystroke.
         if isModelReady { await replayHistory() } else { updateUsage() }
@@ -406,44 +415,98 @@ final class ChatViewModel: ObservableObject {
     /// turns so the model regains full context. No-op if no model is loaded.
     private func replayHistory(upTo endIndex: Int? = nil) async {
         guard engine.isLoaded else { updateUsage(); return }
+        let revision = conversationRevision
         isReplaying = true
-        try? await engine.reset(systemPrompt: systemBlock())
-        isFirstUserTurn = true
+        let originalContextStart = contextStart
+        defer {
+            // A superseded replay must not hide the progress indicator owned by
+            // the newer conversation's replay.
+            if revision == conversationRevision {
+                isReplaying = false
+                updateUsage()
+                if contextStart != originalContextStart { persistCurrent() }
+            }
+        }
 
         // Stateless chats never carry conversation context, so there is nothing
         // to replay — resetting the system prompt is enough.
         if config.discardContext {
-            isReplaying = false
-            updateUsage()
+            try? await engine.reset(systemPrompt: systemBlock())
+            isFirstUserTurn = true
             return
         }
 
-        if contextStart > messages.count { contextStart = 0 }
         // Iterate a snapshot: `messages` can be mutated on the main actor across the
         // `await`s below (a new send, a conversation switch, etc.), which would make
         // a live `messages[i]` go out of range.
         let msgs = messages
         let end = min(endIndex ?? msgs.count, msgs.count)
-        var i = min(contextStart, msgs.count)
-        while i < end {
-            let m = msgs[i]
-            if m.role == .user {
-                let delta = userDelta(text: m.text, nMedia: m.attachments.count, first: isFirstUserTurn)
-                try? await engine.evaluate(prompt: delta, imagePaths: m.imagePaths, audioPaths: m.audioPaths)
-                isFirstUserTurn = false
-                if i + 1 < end {
-                    let a = msgs[i + 1]
-                    if a.role == .assistant, !a.failed, !a.text.isEmpty {
-                        try? await engine.evaluate(prompt: a.text, imagePaths: [], audioPaths: [])
-                        i += 2
-                        continue
+        if contextStart > end { contextStart = 0 }
+
+        // Conversations saved by older builds have no persisted contextStart.
+        // Replay once from their saved start. On overflow, reset the partial KV
+        // state, discard the oldest half of the remaining turns, and retry.
+        while revision == conversationRevision {
+            do {
+                try await engine.reset(systemPrompt: systemBlock())
+                guard revision == conversationRevision else { return }
+                isFirstUserTurn = true
+                var i = min(contextStart, end)
+                while i < end {
+                    guard revision == conversationRevision else { return }
+                    let m = msgs[i]
+                    if m.role == .user {
+                        let delta = userDelta(text: m.text, nMedia: m.attachments.count, first: isFirstUserTurn)
+                        try await engine.evaluate(prompt: delta, imagePaths: m.imagePaths, audioPaths: m.audioPaths)
+                        guard revision == conversationRevision else { return }
+                        isFirstUserTurn = false
+                        if i + 1 < end {
+                            let a = msgs[i + 1]
+                            if a.role == .assistant, !a.failed, !a.text.isEmpty {
+                                try await engine.evaluate(prompt: a.text, imagePaths: [], audioPaths: [])
+                                i += 2
+                                continue
+                            }
+                        }
                     }
+                    i += 1
+                }
+                return
+            } catch {
+                guard revision == conversationRevision else { return }
+                LlamaBridge.appendLogNote(
+                    "openTihui: history replay overflow/error from message \(contextStart)/\(end) — " +
+                    "\(error.localizedDescription); compacting and retrying"
+                )
+                guard advanceReplayStart(before: end, in: msgs) else {
+                    // If even the newest retained turn is too large, leave the
+                    // transcript visible and restore an empty, usable context.
+                    contextStart = end
+                    try? await engine.reset(systemPrompt: systemBlock())
+                    isFirstUserTurn = true
+                    LlamaBridge.appendLogNote(
+                        "openTihui: history replay skipped — newest saved turn exceeds the context window"
+                    )
+                    return
                 }
             }
-            i += 1
         }
-        isReplaying = false
-        updateUsage()
+    }
+
+    /// Move restore-time replay to a newer user turn after an overflow. Returns
+    /// false when no smaller non-empty suffix remains.
+    private func advanceReplayStart(before end: Int, in msgs: [ChatMessage]) -> Bool {
+        let end = min(max(end, 0), msgs.count)
+        guard contextStart < end,
+              let lastUser = msgs[..<end].lastIndex(where: { $0.role == .user }),
+              contextStart < lastUser else { return false }
+        let remaining = lastUser - contextStart
+        var candidate = contextStart + max(2, remaining / 2)
+        while candidate < lastUser && msgs[candidate].role != .user { candidate += 1 }
+        candidate = min(candidate, lastUser)
+        guard candidate > contextStart else { return false }
+        contextStart = candidate
+        return true
     }
 
     /// Drop the oldest in-context turns (before the current/last user turn) to
@@ -498,6 +561,7 @@ final class ChatViewModel: ObservableObject {
         guard newStart < messages.count else { return }
         contextStart = newStart
         await replayHistory()
+        persistCurrent()
     }
 
     // MARK: Sending
@@ -692,6 +756,7 @@ final class ChatViewModel: ObservableObject {
                                  variables: variableValues.isEmpty ? nil : variableValues,
                                  variableDefs: variableDefs.isEmpty ? nil : variableDefs,
                                  variableScope: variableScope.isEmpty ? nil : variableScope,
+                                 contextStart: contextStart,
                                  messages: messages.filter { !$0.isStreaming || !$0.text.isEmpty }.map { $0.stored })
         store.upsert(convo)
     }

@@ -661,7 +661,11 @@ static void llamachat_log_capture(enum ggml_log_level level, const char *text, v
 
     // best-effort compression before a (potentially large) multimodal eval
     size_t needed = mtmd_helper_get_n_tokens(chunks);
-    [self ensureRoomFor:(int)needed];
+    if (![self ensureRoomFor:(int)needed]) {
+        mtmd_input_chunks_free(chunks);
+        [self failWith:error msg:@"Context is full — this saved media turn does not fit in the current window. Older turns must be compacted before replay."];
+        return NO;
+    }
 
     llama_pos newNPast = _nPastInternal;
     int32_t erc = mtmd_helper_eval_chunks(_mctx, _lctx, chunks, _nPastInternal,

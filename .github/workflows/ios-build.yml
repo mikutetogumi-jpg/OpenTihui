@@ -47,6 +47,7 @@ jobs:
             -project openTihui.xcodeproj \
             -scheme openTihui \
             -clonedSourcePackagesDirPath build-ci/SourcePackages \
+            -skipPackagePluginValidation \
             2>&1 | tee package-resolve.log
 
       - name: Build unsigned device app
@@ -60,6 +61,7 @@ jobs:
             -destination 'generic/platform=iOS' \
             -derivedDataPath build-ci \
             -clonedSourcePackagesDirPath build-ci/SourcePackages \
+            -skipPackagePluginValidation \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY='' \

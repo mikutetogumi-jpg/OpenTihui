@@ -210,9 +210,13 @@ struct ImportModelSheet: View {
 
     @State private var modelURL: URL?
     @State private var mmprojURL: URL?
-    @State private var picking: Picking?
+    @State private var importTarget: ImportTarget = .model
+    @State private var isFileImporterPresented = false
 
-    private enum Picking { case model, mmproj }
+    private enum ImportTarget: String {
+        case model
+        case projector
+    }
 
     private var ggufType: [UTType] { [UTType(filenameExtension: "gguf") ?? .data, .data] }
 
@@ -220,10 +224,10 @@ struct ImportModelSheet: View {
         NavigationStack {
             Form {
                 Section("Model file (required)") {
-                    fileRow(url: modelURL, placeholder: "Choose .gguf model") { picking = .model }
+                    fileRow(url: modelURL, placeholder: "Choose .gguf model") { beginImporting(.model) }
                 }
                 Section("Multimodal projector (optional)") {
-                    fileRow(url: mmprojURL, placeholder: "Choose mmproj .gguf") { picking = .mmproj }
+                    fileRow(url: mmprojURL, placeholder: "Choose mmproj .gguf") { beginImporting(.projector) }
                     if mmprojURL != nil {
                         Button("Remove projector", role: .destructive) { mmprojURL = nil }
                     }
@@ -243,15 +247,26 @@ struct ImportModelSheet: View {
                     }.disabled(modelURL == nil)
                 }
             }
-            .fileImporter(isPresented: Binding(get: { picking != nil },
-                                               set: { if !$0 { picking = nil } }),
+            .fileImporter(isPresented: $isFileImporterPresented,
                           allowedContentTypes: ggufType) { result in
-                if case .success(let url) = result {
-                    if picking == .model { modelURL = url } else { mmprojURL = url }
+                let completedTarget = importTarget
+                switch result {
+                case .success(let url):
+                    LlamaBridge.appendLogNote("openTihui: file selected — import type = \(completedTarget.rawValue), file = \(url.lastPathComponent)")
+                    switch completedTarget {
+                    case .model: modelURL = url
+                    case .projector: mmprojURL = url
+                    }
+                case .failure(let error):
+                    LlamaBridge.appendLogNote("openTihui: file selection ended — import type = \(completedTarget.rawValue), error = \(error.localizedDescription)")
                 }
-                picking = nil
             }
         }
+    }
+
+    private func beginImporting(_ target: ImportTarget) {
+        importTarget = target
+        isFileImporterPresented = true
     }
 
     private func fileRow(url: URL?, placeholder: String, action: @escaping () -> Void) -> some View {

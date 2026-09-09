@@ -251,11 +251,13 @@ final class ModelStore: ObservableObject {
 
     /// Copy a picked GGUF (and optional mmproj) into the app sandbox and register it.
     func importModel(modelURL: URL, mmprojURL: URL?) throws {
+        LlamaBridge.appendLogNote("openTihui: import type = model, file = \(modelURL.lastPathComponent)")
         let destModel = ModelStore.modelsDirectory.appendingPathComponent(modelURL.lastPathComponent)
         try copyItem(at: modelURL, to: destModel)
 
         var destMmproj: URL?
         if let mmprojURL {
+            LlamaBridge.appendLogNote("openTihui: import type = projector, file = \(mmprojURL.lastPathComponent)")
             let d = ModelStore.modelsDirectory.appendingPathComponent(mmprojURL.lastPathComponent)
             try copyItem(at: mmprojURL, to: d)
             destMmproj = d
@@ -270,6 +272,7 @@ final class ModelStore: ObservableObject {
         imported.append(model)
         saveImported(imported)
         reload()
+        LlamaBridge.appendLogNote("openTihui: model import completed — model = \(destModel.lastPathComponent), projector = \(destMmproj?.lastPathComponent ?? "none")")
     }
 
     /// Register files that already live inside the app sandbox (e.g. downloaded

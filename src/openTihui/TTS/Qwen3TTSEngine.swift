@@ -9,11 +9,20 @@ import Qwen3TTS
 enum Qwen3TTSError: LocalizedError {
     case notLoaded
     case emptyText
+    case voiceReferenceRequired
+    case speakerEmbeddingUnavailable
+    case emptyAudio
 
     var errorDescription: String? {
         switch self {
         case .notLoaded: return "Load a Qwen3-TTS model first."
         case .emptyText: return "Enter text to synthesize."
+        case .voiceReferenceRequired:
+            return "This Base model has no built-in speaker. Select or create a Voice Profile first."
+        case .speakerEmbeddingUnavailable:
+            return "The loaded model could not extract a speaker embedding from this reference audio."
+        case .emptyAudio:
+            return "Qwen3-TTS generated an empty WAV. Playback was skipped."
         }
     }
 }
@@ -67,6 +76,7 @@ final class Qwen3TTSEngine: TTSEngine, @unchecked Sendable {
             try await loaded.generateToFile(
                 text: text,
                 speaker: request.speaker,
+                speakerEmbedding: request.speakerEmbedding,
                 outputURL: outputURL,
                 temperature: request.temperature,
                 onProgress: { value in onProgress(Int((value * 100).rounded())) }
@@ -81,6 +91,10 @@ final class Qwen3TTSEngine: TTSEngine, @unchecked Sendable {
         } onCancel: {
             task.cancel()
         }
+        guard count > 0 else {
+            try? FileManager.default.removeItem(at: outputURL)
+            throw Qwen3TTSError.emptyAudio
+        }
         let result = TTSSynthesisResult(
             outputURL: outputURL,
             elapsed: Date().timeIntervalSince(started),
@@ -94,6 +108,21 @@ final class Qwen3TTSEngine: TTSEngine, @unchecked Sendable {
             "\(String(format: "%.2f", result.realTimeFactor))"
         )
         return result
+    }
+
+    func extractSpeakerEmbedding(audioSamples: [Float]) async throws -> [Float] {
+        let loaded = locked { pipeline }
+        guard let loaded else { throw Qwen3TTSError.notLoaded }
+        let embedding = await Task.detached(priority: .userInitiated) {
+            loaded.extractSpeakerEmbedding(audioSamples: audioSamples)
+        }.value
+        guard let embedding, !embedding.isEmpty else {
+            throw Qwen3TTSError.speakerEmbeddingUnavailable
+        }
+        LlamaBridge.appendLogNote(
+            "openTihui TTS: speaker embedding extracted — dimensions = \(embedding.count)"
+        )
+        return embedding
     }
 
     func stop() {

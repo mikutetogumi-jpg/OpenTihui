@@ -1,10 +1,10 @@
 # Qwen3-TTS integration status
 
-Updated: 2026-09-09
+Updated: 2026-09-10
 
 ## Scope
 
-This round adds an isolated, developer-only TTS smoke-test path. It does not add voice profiles, voice cloning, character support, automatic chat speech, or any change to `LlamaBridge.mm`.
+The isolated developer TTS page now includes a minimal speaker-embedding Voice Clone test. It does not add character support, automatic chat speech, reference-audio ICL generation, or any change to `LlamaBridge.mm`.
 
 ## Implementation choice
 
@@ -26,6 +26,8 @@ No Hugging Face download code was added in this round. TTS model directories are
 - `TTSModelManager.swift`: dedicated `Documents/TTSModels` store, validation, list, current selection, metadata, size, and deletion. It does not use the GGUF model list.
 - `AudioPlayer.swift`: AVFoundation playback and stop.
 - `TTSDebugView.swift`: Settings → Developer / Experimental → Qwen3-TTS Test.
+- `ReferenceAudioLoader.swift`: decodes a selected WAV and converts it to the package speaker encoder's preferred 16 kHz mono Float32 samples.
+- `VoiceProfileStore.swift`: saves the reference WAV, exact transcript, language, and extracted speaker embedding under `Documents/VoiceProfiles`.
 
 ## Model directory format
 
@@ -45,7 +47,17 @@ MLX model uses the split BPE layout.
 
 The actual model format is a directory. ZIP import was deliberately not added because the selected package does not consume archives and adding an unzip dependency is not necessary for the smoke test.
 
-Suggested first memory test: `mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit` (about 1.7 GB according to the package documentation). A Base model may report no built-in speakers; the debug page logs that fact. Do not implement or judge Voice Clone until the basic device load/WAV path has been measured.
+Test model: `mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit`. The real-device smoke test confirmed that this Base model loads, supports voice cloning, and reports no built-in speakers. Generation without a speaker embedding produced an empty WAV, so the page now requires a saved Voice Profile for such a model.
+
+## Voice Clone test path
+
+1. Load the Base TTS model.
+2. Select a clean 5–10 second local WAV and enter its exact transcript.
+3. Extract and save a Voice Profile. The package receives 16 kHz mono samples and returns the stored speaker embedding.
+4. Select the saved profile and generate a short target sentence.
+5. The embedding is passed to the package's existing `generateToFile` API; no MLX inference implementation is duplicated in the app.
+
+The first implementation deliberately uses speaker-embedding conditioning only. The package's reference-audio/ICL path remains a later experiment if device testing shows that speaker embedding alone does not preserve the desired style or prosody.
 
 ## Memory behavior
 
@@ -53,6 +65,7 @@ Suggested first memory test: `mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit` (abou
 - The log records available process memory before load, after load, the lowest sampled availability during generation, and after unload. This is iOS process-limit availability, not an exact physical-RAM profiler.
 - `UIApplication.didReceiveMemoryWarningNotification` stops playback/generation, releases the TTS pipeline, and clears MLX caches.
 - Clear Cache and Unload Model are also exposed as separate debug controls.
+- A zero-sample result is deleted and reported as an empty-generation error. It is never handed to AVFoundation for playback.
 
 ## Build status
 
@@ -65,13 +78,14 @@ CI can prove package resolution and `iphoneos` compilation. It cannot honestly p
 
 ## Real-device checklist
 
-- [ ] Import the complete TTS model folder.
-- [ ] Load the model without app termination.
-- [ ] Generate the default Chinese text to WAV.
-- [ ] Confirm AVFoundation playback and Stop.
+- [x] Import the complete TTS model folder.
+- [x] Load the model without app termination.
+- [ ] Select a clean reference WAV and save a Voice Profile.
+- [ ] Generate a short Chinese sentence with the selected Voice Profile.
+- [ ] Confirm the resulting audio duration is greater than zero and AVFoundation playback works.
 - [ ] Record the metrics and logs shown on the page.
 - [ ] Run Clear MLX Cache and Unload; confirm the app remains responsive.
 
 ## Next gate
 
-Stop after this first smoke-test build. Voice profile storage, speaker-embedding/reference-audio cloning, and chat auto-speech must wait for the user's real-iPhone result.
+Stop after the speaker-embedding Voice Clone build and real-device test. Do not connect TTS to chat until GGUF chat and cloned speech are independently stable.

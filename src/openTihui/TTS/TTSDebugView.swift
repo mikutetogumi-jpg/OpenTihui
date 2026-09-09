@@ -13,9 +13,14 @@ final class TTSDebugViewModel: ObservableObject {
     @Published var speaker = ""
     @Published var temperature: Double = 0.7
     @Published private(set) var speakers: [String] = []
+    @Published private(set) var supportsVoiceCloning = false
     @Published private(set) var loadedModelID: String?
     @Published private(set) var isLoading = false
     @Published private(set) var isGenerating = false
+    @Published private(set) var isExtractingVoice = false
+    @Published private(set) var referenceAudioURL: URL?
+    @Published var voiceProfileName = ""
+    @Published var referenceText = ""
     @Published private(set) var progress = 0
     @Published private(set) var loadTime: TimeInterval?
     @Published private(set) var synthesis: TTSSynthesisResult?
@@ -29,7 +34,7 @@ final class TTSDebugViewModel: ObservableObject {
     private var lowestAvailableBytes: UInt64?
 
     func load(_ model: TTSModelInfo, chat: ChatViewModel) {
-        guard !isLoading, !isGenerating else { return }
+        guard !isLoading, !isGenerating, !isExtractingVoice else { return }
         stop()
         chat.unload()
         append("GGUF model unloaded before TTS load")
@@ -43,6 +48,7 @@ final class TTSDebugViewModel: ObservableObject {
                 loadedModelID = model.id
                 loadTime = result.elapsed
                 speakers = result.availableSpeakers
+                supportsVoiceCloning = result.supportsVoiceCloning
                 speaker = speakers.first ?? ""
                 append("Loaded \(model.name) in \(format(result.elapsed)) s; voice clone = \(result.supportsVoiceCloning)")
                 appendMemory("After load", bytes: availableMemory())
@@ -56,11 +62,78 @@ final class TTSDebugViewModel: ObservableObject {
         }
     }
 
-    func generate() {
-        guard !isLoading, !isGenerating else { return }
+    func selectReferenceAudio(_ url: URL) {
+        referenceAudioURL = url
+        if voiceProfileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            voiceProfileName = url.deletingPathExtension().lastPathComponent
+        }
+        append("Reference WAV selected — \(url.lastPathComponent)")
+    }
+
+    func createVoiceProfile(in store: VoiceProfileStore) {
+        guard !isLoading, !isGenerating, !isExtractingVoice else { return }
+        guard supportsVoiceCloning else {
+            errorMessage = Qwen3TTSError.speakerEmbeddingUnavailable.localizedDescription
+            return
+        }
+        guard let referenceAudioURL else {
+            errorMessage = "Select a reference WAV first."
+            return
+        }
+        let trimmedName = voiceProfileName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            errorMessage = VoiceProfileError.emptyName.localizedDescription
+            return
+        }
+        let trimmedText = referenceText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedText.isEmpty else {
+            errorMessage = VoiceProfileError.emptyTranscript.localizedDescription
+            return
+        }
+        isExtractingVoice = true
+        errorMessage = nil
+        append("Speaker embedding extraction started")
+        workTask = Task {
+            do {
+                let audio = try await ReferenceAudioLoader.loadForSpeakerEmbedding(from: referenceAudioURL)
+                append("Reference WAV decoded — \(format(audio.duration)) s, \(audio.samples.count) samples at 16 kHz")
+                let embedding = try await engine.extractSpeakerEmbedding(audioSamples: audio.samples)
+                let profile = try await store.create(
+                    name: trimmedName,
+                    referenceAudio: referenceAudioURL,
+                    referenceText: trimmedText,
+                    language: language.rawValue,
+                    embedding: embedding
+                )
+                append("Voice Profile saved — \(profile.name), embedding dimensions = \(embedding.count)")
+            } catch is CancellationError {
+                append("Speaker embedding extraction cancelled")
+            } catch {
+                fail(error)
+            }
+            isExtractingVoice = false
+        }
+    }
+
+    func generate(using voiceProfiles: VoiceProfileStore) {
+        guard !isLoading, !isGenerating, !isExtractingVoice else { return }
         guard loadedModelID != nil else {
             errorMessage = Qwen3TTSError.notLoaded.localizedDescription
             return
+        }
+        var embedding: [Float]?
+        if speakers.isEmpty {
+            guard supportsVoiceCloning, let profile = voiceProfiles.currentProfile else {
+                errorMessage = Qwen3TTSError.voiceReferenceRequired.localizedDescription
+                return
+            }
+            do {
+                embedding = try voiceProfiles.loadEmbedding(for: profile)
+                append("Using Voice Profile — \(profile.name)")
+            } catch {
+                fail(error)
+                return
+            }
         }
         isGenerating = true
         errorMessage = nil
@@ -74,6 +147,7 @@ final class TTSDebugViewModel: ObservableObject {
             text: text,
             language: language,
             speaker: speaker,
+            speakerEmbedding: embedding,
             temperature: Float(temperature)
         )
         append("Generate started; language = \(language.rawValue), output = \(output.lastPathComponent)")
@@ -127,6 +201,7 @@ final class TTSDebugViewModel: ObservableObject {
             await engine.unload()
             loadedModelID = nil
             speakers = []
+            supportsVoiceCloning = false
             speaker = ""
             isLoading = false
             appendMemory("After unload", bytes: availableMemory())
@@ -181,7 +256,9 @@ struct TTSDebugView: View {
     @EnvironmentObject private var models: TTSModelManager
     @EnvironmentObject private var chat: ChatViewModel
     @StateObject private var viewModel = TTSDebugViewModel()
+    @StateObject private var voiceProfiles = VoiceProfileStore()
     @State private var importing = false
+    @State private var importingReferenceAudio = false
     @State private var exportFile: ExportFile?
     @State private var importError: String?
 
@@ -222,11 +299,69 @@ struct TTSDebugView: View {
                 } label: {
                     Label(viewModel.isLoading ? "Loading…" : "Load Model", systemImage: "memorychip")
                 }
-                .disabled(models.currentModel == nil || viewModel.isLoading || viewModel.isGenerating)
+                .disabled(
+                    models.currentModel == nil || viewModel.isLoading ||
+                    viewModel.isGenerating || viewModel.isExtractingVoice
+                )
             } header: {
                 Text("TTS Models")
             } footer: {
                 Text("Imports a complete local model directory into Documents/TTSModels. Loading TTS first unloads the active GGUF model.")
+            }
+
+            if viewModel.supportsVoiceCloning {
+                Section {
+                    if voiceProfiles.profiles.isEmpty {
+                        Text("No Voice Profiles saved").foregroundStyle(.secondary)
+                    }
+                    ForEach(voiceProfiles.profiles) { profile in
+                        Button {
+                            voiceProfiles.currentProfileID = profile.id
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(profile.name).foregroundStyle(.primary)
+                                    Text(profile.language).font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if voiceProfiles.currentProfileID == profile.id {
+                                    Image(systemName: "checkmark.circle.fill")
+                                }
+                            }
+                        }
+                        .swipeActions {
+                            Button("Delete", role: .destructive) {
+                                do { try voiceProfiles.delete(profile) }
+                                catch { importError = error.localizedDescription }
+                            }
+                        }
+                    }
+                    Button { importingReferenceAudio = true } label: {
+                        Label("Select Reference WAV", systemImage: "waveform.badge.plus")
+                    }
+                    if let url = viewModel.referenceAudioURL {
+                        LabeledContent("Reference", value: url.lastPathComponent)
+                    }
+                    TextField("Voice Profile name", text: $viewModel.voiceProfileName)
+                    Text("Exact reference transcript").font(.caption).foregroundStyle(.secondary)
+                    TextEditor(text: $viewModel.referenceText).frame(minHeight: 70)
+                    Button {
+                        viewModel.createVoiceProfile(in: voiceProfiles)
+                    } label: {
+                        Label(
+                            viewModel.isExtractingVoice ? "Extracting…" : "Extract & Save Voice Profile",
+                            systemImage: "person.wave.2"
+                        )
+                    }
+                    .disabled(
+                        viewModel.referenceAudioURL == nil || viewModel.isLoading ||
+                        viewModel.isGenerating || viewModel.isExtractingVoice
+                    )
+                } header: {
+                    Text("Voice Clone")
+                } footer: {
+                    Text("Speaker Embedding mode: use a clean 5–10 second WAV and enter its exact transcript. The reference audio and embedding remain on this device.")
+                }
             }
 
             Section("Synthesis") {
@@ -241,10 +376,20 @@ struct TTSDebugView: View {
                 }
                 LabeledContent("Temperature", value: String(format: "%.2f", viewModel.temperature))
                 Slider(value: $viewModel.temperature, in: 0...1, step: 0.05)
-                Button { viewModel.generate() } label: {
+                Button { viewModel.generate(using: voiceProfiles) } label: {
                     Label(viewModel.isGenerating ? "Generating \(viewModel.progress)%" : "Generate WAV", systemImage: "waveform")
                 }
-                .disabled(viewModel.loadedModelID == nil || viewModel.isLoading || viewModel.isGenerating)
+                .disabled(
+                    viewModel.loadedModelID == nil || viewModel.isLoading || viewModel.isGenerating ||
+                    viewModel.isExtractingVoice ||
+                    (viewModel.speakers.isEmpty && voiceProfiles.currentProfile == nil)
+                )
+                if viewModel.loadedModelID != nil,
+                   viewModel.speakers.isEmpty,
+                   voiceProfiles.currentProfile == nil {
+                    Text("This Base model requires a saved Voice Profile before generation.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 if viewModel.isGenerating { ProgressView(value: Double(viewModel.progress), total: 100) }
                 HStack {
                     Button("Play") { viewModel.play() }
@@ -282,6 +427,18 @@ struct TTSDebugView: View {
                     guard let url = try result.get().first else { return }
                     try await models.importModelDirectory(url)
                 } catch { importError = error.localizedDescription }
+            }
+        }
+        .fileImporter(
+            isPresented: $importingReferenceAudio,
+            allowedContentTypes: [.wav],
+            allowsMultipleSelection: false
+        ) { result in
+            do {
+                guard let url = try result.get().first else { return }
+                viewModel.selectReferenceAudio(url)
+            } catch {
+                importError = error.localizedDescription
             }
         }
         .sheet(item: $exportFile) { ShareSheet(items: [$0.url]) }

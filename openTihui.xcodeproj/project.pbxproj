@@ -10,6 +10,7 @@
 		BF00000000000000000001 /* llama.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FR00000000000000000001 /* llama.xcframework */; };
 		BF00000000000000000002 /* llama.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FR00000000000000000001 /* llama.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		BF00000000000000000003 /* Keyboard.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = PD00000000000000000002 /* Keyboard.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		BF00000000000000000004 /* Qwen3TTS in Frameworks */ = {isa = PBXBuildFile; productRef = PKGPRD0000000000000001 /* Qwen3TTS */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -74,6 +75,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				BF00000000000000000001 /* llama.xcframework in Frameworks */,
+				BF00000000000000000004 /* Qwen3TTS in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -136,6 +138,9 @@
 				SY00000000000000000001 /* src/openTihui */,
 			);
 			name = openTihui;
+			packageProductDependencies = (
+				PKGPRD0000000000000001 /* Qwen3TTS */,
+			);
 			productName = openTihui;
 			productReference = PD00000000000000000001 /* openTihui.app */;
 			productType = "com.apple.product-type.application";
@@ -189,6 +194,9 @@
 				"zh-Hant",
 			);
 			mainGroup = GR00000000000000000001;
+			packageReferences = (
+				PKGREF0000000000000001 /* XCRemoteSwiftPackageReference "mlx-swift-qwen3-tts" */,
+			);
 			productRefGroup = GR00000000000000000003 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -446,6 +454,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		PKGREF0000000000000001 /* XCRemoteSwiftPackageReference "mlx-swift-qwen3-tts" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/hamptus/mlx-swift-qwen3-tts.git";
+			requirement = {
+				kind = exactVersion;
+				version = 0.2.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		PKGPRD0000000000000001 /* Qwen3TTS */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = PKGREF0000000000000001 /* XCRemoteSwiftPackageReference "mlx-swift-qwen3-tts" */;
+			productName = Qwen3TTS;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = PJ00000000000000000001 /* Project object */;
 }

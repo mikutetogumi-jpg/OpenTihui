@@ -39,6 +39,16 @@ jobs:
           set -o pipefail
           make framework 2>&1 | tee llama-framework-build.log
 
+      - name: Resolve Swift package dependencies
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -resolvePackageDependencies \
+            -project openTihui.xcodeproj \
+            -scheme openTihui \
+            -clonedSourcePackagesDirPath build-ci/SourcePackages \
+            2>&1 | tee package-resolve.log
+
       - name: Build unsigned device app
         run: |
           set -o pipefail
@@ -49,6 +59,7 @@ jobs:
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build-ci \
+            -clonedSourcePackagesDirPath build-ci/SourcePackages \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY='' \
@@ -85,6 +96,7 @@ jobs:
           name: openTihui-build-logs-${{ github.run_number }}
           path: |
             llama-framework-build.log
+            package-resolve.log
             xcodebuild.log
           if-no-files-found: warn
           retention-days: 14

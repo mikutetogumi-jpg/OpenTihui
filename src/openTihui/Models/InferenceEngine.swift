@@ -101,9 +101,12 @@ final class InferenceEngine: @unchecked Sendable {
         let ctx = Int32(contextLength)
         let mmproj = useProjector ? model.mmprojPath : nil
 
-        // Pre-flight memory check: loading past the app's memory limit doesn't
-        // fail gracefully — iOS jetsam-kills the app (an instant silent exit).
-        // Refuse with guidance instead. Simulator has no comparable limit.
+        // Pre-flight memory check. Treat the estimate as advisory when the model
+        // files themselves fit: the fixed headroom is deliberately conservative,
+        // and mmap/Metal residency varies by model and device. Only refuse when
+        // the selected files alone consume the app's entire remaining allowance.
+        // Simulator has no comparable limit.
+        let preflightWarning: String?
         #if !targetEnvironment(simulator)
         func fileSize(_ path: String?) -> UInt64 {
             guard let path,
@@ -114,13 +117,24 @@ final class InferenceEngine: @unchecked Sendable {
         let weights = fileSize(model.modelPath)
         let projector = fileSize(mmproj)
         let headroom: UInt64 = 700 << 20   // KV cache + compute buffers + app
-        let needed = weights + projector + headroom
+        let fileBytes = weights + projector
+        let estimatedNeeded = fileBytes + headroom
         let available = UInt64(os_proc_available_memory())
-        LlamaBridge.appendLogNote("openTihui: load pre-flight — weights \(weights >> 20) MB + projector \(projector >> 20) MB + headroom \(headroom >> 20) MB vs available \(available >> 20) MB")
-        if available > 0 && needed > available {
-            let msg = "Not enough memory to load this model: it needs roughly \(needed >> 20) MB but \(available >> 20) MB is available — iOS would terminate the app mid-load. Try a smaller model or quant, turn off Multimodal (projector) in Chat Settings, or close other apps and retry."
+        LlamaBridge.appendLogNote("openTihui: load pre-flight — weights \(weights >> 20) MB + projector \(projector >> 20) MB + headroom \(headroom >> 20) MB = estimated \(estimatedNeeded >> 20) MB vs available \(available >> 20) MB; context = \(contextLength), gpu = \(gpuLayers > 0)")
+        if available > 0 && fileBytes >= available {
+            LlamaBridge.appendLogNote("openTihui: load pre-flight decision = block — model files alone meet or exceed the process allowance")
+            let msg = "Not enough memory to load this model: its model files total \(fileBytes >> 20) MB but only \(available >> 20) MB remains before the iOS app memory limit. Try a smaller model or quant, or turn off Multimodal (projector) in Chat Settings."
             throw EngineError.loadFailed(msg)
         }
+        if available > 0 && estimatedNeeded > available {
+            preflightWarning = "Memory estimate is close to the iOS app limit. Loading was allowed because the model files themselves fit; if the app closes, use a smaller context, model, or quant, and turn off Multimodal when it is not needed."
+            LlamaBridge.appendLogNote("openTihui: load pre-flight decision = warn and continue — conservative headroom exceeds the process allowance")
+        } else {
+            preflightWarning = nil
+            LlamaBridge.appendLogNote("openTihui: load pre-flight decision = continue")
+        }
+        #else
+        preflightWarning = nil
         #endif
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<ModelSnapshot?, Error>) in
             // Run the load at lower priority so the UI thread is never starved
@@ -137,7 +151,13 @@ final class InferenceEngine: @unchecked Sendable {
                     self.loadedModelID = model.id
                     // Snapshot model info here, on the queue, where it is safe to
                     // touch the model pointer.
-                    let snap = self.bridge.modelInfo.map { ModelSnapshot($0) }
+                    var snap = self.bridge.modelInfo.map { ModelSnapshot($0) }
+                    if let preflightWarning, var snapshot = snap {
+                        snapshot.loadNotice = snapshot.loadNotice.isEmpty
+                            ? preflightWarning
+                            : "\(snapshot.loadNotice)\n\(preflightWarning)"
+                        snap = snapshot
+                    }
                     cont.resume(returning: snap)
                 } catch {
                     cont.resume(throwing: EngineError.loadFailed(error.localizedDescription))

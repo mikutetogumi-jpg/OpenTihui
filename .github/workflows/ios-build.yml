@@ -59,6 +59,8 @@ jobs:
           git -C "$PACKAGE_DIR" apply "$GITHUB_WORKSPACE/patches/qwen3tts-0.2.0-icl-loader.patch"
           git -C "$PACKAGE_DIR" apply --check "$GITHUB_WORKSPACE/patches/qwen3tts-0.2.0-icl-generation.patch"
           git -C "$PACKAGE_DIR" apply "$GITHUB_WORKSPACE/patches/qwen3tts-0.2.0-icl-generation.patch"
+          git -C "$PACKAGE_DIR" apply --check "$GITHUB_WORKSPACE/patches/qwen3tts-0.2.0-full-icl-codec.patch"
+          git -C "$PACKAGE_DIR" apply "$GITHUB_WORKSPACE/patches/qwen3tts-0.2.0-full-icl-codec.patch"
 
       - name: Build unsigned device app
         run: |

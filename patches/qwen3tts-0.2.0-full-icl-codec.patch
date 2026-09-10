@@ -1,0 +1,168 @@
+warning: in the working copy of 'Sources/Qwen3TTS/Vocoder/Qwen3TTSAudioEncoder.swift', LF will be replaced by CRLF the next time Git touches it
+diff --git a/Sources/Qwen3TTS/Vocoder/Qwen3TTSAudioEncoder.swift b/Sources/Qwen3TTS/Vocoder/Qwen3TTSAudioEncoder.swift
+index 20ae997..ef9ed90 100644
+--- a/Sources/Qwen3TTS/Vocoder/Qwen3TTSAudioEncoder.swift
++++ b/Sources/Qwen3TTS/Vocoder/Qwen3TTSAudioEncoder.swift
+@@ -437,60 +437,71 @@ nonisolated public class EncoderResidualVectorQuantizer: Module {
+         return stacked(allCodes, axis: 0)  // [numQuantizers, B, T]
+     }
+
+-    /// Encode only the first codebook. Qwen3-TTS ICL consumes only the first
+-    /// semantic code stream, so evaluating the remaining acoustic codebooks
+-    /// wastes a large amount of memory on iOS.
++    /// Encode codebooks with an eager CPU nearest-neighbour search. MLX's
++    /// 2048-entry reduction exceeds the Metal threadgroup limit on some iPhones.
++    /// Keeping the residual calculation on CPU also avoids retaining one large
++    /// lazy Metal graph per residual quantizer.
+     /// - Parameter x: [B, C, T] (channels-first)
+-    /// - Returns: codes [1, B, T]
+-    public func encodeFirstCodebook(_ x: MLXArray) -> MLXArray {
+-        reportQwen3TTSICLStage("Semantic projection begin")
++    /// - Returns: codes [quantizers, B, T]
++    public func encodeCodebooksCPU(
++        _ x: MLXArray,
++        maximumCount: Int,
++        label: String
++    ) -> MLXArray {
++        reportQwen3TTSICLStage("\(label) projection begin")
+         var projected = x.transposed(0, 2, 1)   // [B, T, C]
+         projected = inputProj(projected)          // [B, T, dim]
+         eval(projected)
+         Memory.clearCache()
+-        reportQwen3TTSICLStage("Semantic projection complete")
+-
+-        // MLX's reduction over the 2048-entry codebook can exceed the Metal
+-        // threadgroup limit on iPhone GPUs. This final nearest-neighbour step
+-        // is small for a short voice reference, so evaluate it on the CPU.
+-        reportQwen3TTSICLStage("Semantic codebook CPU search begin")
+-        let codebook = layers[0].codebook
+-        let codebookWeight = codebook.embed.weight
+-        eval(codebookWeight)
++        reportQwen3TTSICLStage("\(label) projection complete")
+
+         let batchSize = projected.shape[0]
+         let timeSteps = projected.shape[1]
+         let vectorDimension = projected.shape[2]
+-        let vectors = projected.asArray(Float.self)
+-        let embeddings = codebookWeight.asArray(Float.self)
+-        var nearestCodes = [Int32](repeating: 0, count: batchSize * timeSteps)
+-
+-        for vectorIndex in 0..<(batchSize * timeSteps) {
+-            let vectorOffset = vectorIndex * vectorDimension
+-            var bestCode = 0
+-            var bestDistance = Float.greatestFiniteMagnitude
+-
+-            for codeIndex in 0..<codebook.codebookSize {
+-                let codeOffset = codeIndex * vectorDimension
+-                var distance: Float = 0
+-                for dimensionIndex in 0..<vectorDimension {
+-                    let delta = vectors[vectorOffset + dimensionIndex]
+-                        - embeddings[codeOffset + dimensionIndex]
+-                    distance += delta * delta
++        var residual = projected.asArray(Float.self)
++        let quantizerCount = min(maximumCount, layers.count)
++        var allCodes: [MLXArray] = []
++        allCodes.reserveCapacity(quantizerCount)
++
++        for (layerIndex, layer) in layers.prefix(quantizerCount).enumerated() {
++            reportQwen3TTSICLStage("\(label) codebook \(layerIndex) CPU search begin")
++            let codebook = layer.codebook
++            let codebookWeight = codebook.embed.weight
++            eval(codebookWeight)
++            let embeddings = codebookWeight.asArray(Float.self)
++            var nearestCodes = [Int32](repeating: 0, count: batchSize * timeSteps)
++
++            for vectorIndex in 0..<(batchSize * timeSteps) {
++                let vectorOffset = vectorIndex * vectorDimension
++                var bestCode = 0
++                var bestDistance = Float.greatestFiniteMagnitude
++
++                for codeIndex in 0..<codebook.codebookSize {
++                    let codeOffset = codeIndex * vectorDimension
++                    var distance: Float = 0
++                    for dimensionIndex in 0..<vectorDimension {
++                        let delta = residual[vectorOffset + dimensionIndex]
++                            - embeddings[codeOffset + dimensionIndex]
++                        distance += delta * delta
++                    }
++                    if distance < bestDistance {
++                        bestDistance = distance
++                        bestCode = codeIndex
++                    }
+                 }
+-                if distance < bestDistance {
+-                    bestDistance = distance
+-                    bestCode = codeIndex
++                nearestCodes[vectorIndex] = Int32(bestCode)
++                let bestOffset = bestCode * vectorDimension
++                for dimensionIndex in 0..<vectorDimension {
++                    residual[vectorOffset + dimensionIndex] -= embeddings[bestOffset + dimensionIndex]
+                 }
+             }
+-            nearestCodes[vectorIndex] = Int32(bestCode)
+-        }
+
+-        let indices = MLXArray(nearestCodes).reshaped([batchSize, timeSteps])
+-        Memory.clearCache()
+-        reportQwen3TTSICLStage("Semantic codebook CPU search complete")
++            allCodes.append(MLXArray(nearestCodes).reshaped([batchSize, timeSteps]))
++            Memory.clearCache()
++            reportQwen3TTSICLStage("\(label) codebook \(layerIndex) CPU search complete")
++        }
+
+-        return indices.expandedDimensions(axis: 0)  // [1, B, T]
++        return stacked(allCodes, axis: 0)
+     }
+ }
+
+@@ -530,12 +541,29 @@ nonisolated public class EncoderSplitResidualVectorQuantizer: Module {
+         return allCodes.transposed(1, 0, 2)  // [B, numQ, T]
+     }
+
+-    /// Encode the semantic stream used by Qwen3-TTS ICL. The talker reads
+-    /// `refCodes[0]` only; acoustic reference codes are not consumed.
++    /// Encode the complete reference codec required by Qwen3-TTS Base ICL.
+     /// - Parameter x: [B, C, T] (channels-first)
+-    /// - Returns: codes [B, 1, T]
+-    public func encodeSemantic(_ x: MLXArray) -> MLXArray {
+-        semanticResidualVectorQuantizer.encodeFirstCodebook(x)
++    /// - Returns: codes [B, quantizers, T]
++    public func encodeForICL(_ x: MLXArray, maximumCount: Int) -> MLXArray {
++        let semanticCount = min(maximumCount, semanticResidualVectorQuantizer.layers.count)
++        let semanticCodes = semanticResidualVectorQuantizer.encodeCodebooksCPU(
++            x,
++            maximumCount: semanticCount,
++            label: "Semantic"
++        )
++        let acousticCount = min(
++            max(0, maximumCount - semanticCount),
++            acousticResidualVectorQuantizer.layers.count
++        )
++        if acousticCount == 0 {
++            return semanticCodes.transposed(1, 0, 2)
++        }
++        let acousticCodes = acousticResidualVectorQuantizer.encodeCodebooksCPU(
++            x,
++            maximumCount: acousticCount,
++            label: "Acoustic"
++        )
++        return concatenated([semanticCodes, acousticCodes], axis: 0)
+             .transposed(1, 0, 2)
+     }
+ }
+@@ -647,11 +675,11 @@ nonisolated public class Qwen3TTSAudioEncoder: Module {
+         Memory.clearCache()
+         reportQwen3TTSICLStage("Downsample complete")
+
+-        // Qwen3-TTS ICL consumes only refCodes[0]. Avoid evaluating the 31
+-        // acoustic codebooks that are discarded by the talker and can exceed
+-        // the iOS memory limit.
++        // Qwen3-TTS Base ICL conditions on the complete 16-group reference
++        // codec. Evaluate each residual codebook eagerly on CPU to avoid the
++        // iPhone Metal reduction crash seen with the original implementation.
+         reportQwen3TTSICLStage("Quantizer begin")
+-        let codes = quantizer.encodeSemantic(h)
++        let codes = quantizer.encodeForICL(h, maximumCount: min(validNumQuantizers, 16))
+         eval(codes)
+         Memory.clearCache()
+         reportQwen3TTSICLStage("Quantizer complete")

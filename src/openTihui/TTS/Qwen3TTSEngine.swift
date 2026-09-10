@@ -12,6 +12,7 @@ enum Qwen3TTSError: LocalizedError {
     case voiceReferenceRequired
     case speakerEmbeddingUnavailable
     case referenceAudioEncodingUnavailable
+    case incompleteVoiceProfile(quantizers: Int)
     case emptyAudio
 
     var errorDescription: String? {
@@ -24,6 +25,8 @@ enum Qwen3TTSError: LocalizedError {
             return "The loaded model could not extract a speaker embedding from this reference audio."
         case .referenceAudioEncodingUnavailable:
             return "The loaded model could not encode this reference audio for ICL Voice Clone."
+        case .incompleteVoiceProfile(let quantizers):
+            return "This Voice Profile contains \(quantizers) of 16 required reference code groups. Delete it and encode the reference WAV once with this build."
         case .emptyAudio:
             return "Qwen3-TTS generated an empty WAV. Playback was skipped."
         }

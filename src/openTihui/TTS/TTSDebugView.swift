@@ -148,6 +148,11 @@ final class TTSDebugViewModel: ObservableObject {
             do {
                 if profile.referenceCodesPath != nil {
                     referenceAudioCodes = try voiceProfiles.loadReferenceCodes(for: profile)
+                    guard referenceAudioCodes?.count == 16 else {
+                        throw Qwen3TTSError.incompleteVoiceProfile(
+                            quantizers: referenceAudioCodes?.count ?? 0
+                        )
+                    }
                     referenceTranscript = profile.referenceText
                 } else {
                     embedding = try voiceProfiles.loadEmbedding(for: profile)
@@ -181,6 +186,7 @@ final class TTSDebugViewModel: ObservableObject {
                 let result = try await engine.synthesize(request, to: output) { [weak self] value in
                     Task { @MainActor in self?.progress = value }
                 }
+                mergePackageLogs()
                 synthesis = result
                 progress = 100
                 append("Generated WAV: \(format(result.elapsed)) s synthesis, \(format(result.audioDuration)) s audio, RTF \(format(result.realTimeFactor))")
@@ -277,7 +283,17 @@ final class TTSDebugViewModel: ObservableObject {
         LlamaBridge.appendLogNote("openTihui TTS Debug: \(line)")
     }
 
+    private func mergePackageLogs() {
+        let packageLines = UserDefaults.standard.stringArray(forKey: Self.persistedLogKey) ?? []
+        let existing = Set(logLines)
+        logLines.append(contentsOf: packageLines.filter { !existing.contains($0) })
+        if logLines.count > Self.maximumPersistedLogLines {
+            logLines.removeFirst(logLines.count - Self.maximumPersistedLogLines)
+        }
+    }
+
     private func fail(_ error: Error) {
+        mergePackageLogs()
         errorMessage = error.localizedDescription
         append("ERROR: \(error.localizedDescription)")
     }

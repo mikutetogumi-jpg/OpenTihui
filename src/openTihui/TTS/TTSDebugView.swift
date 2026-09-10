@@ -64,6 +64,8 @@ final class TTSDebugViewModel: ObservableObject {
                 if speakers.isEmpty {
                     append("No built-in speakers reported; this model may require a voice reference in the later Voice Clone phase")
                 }
+            } catch is CancellationError {
+                append("TTS model load cancelled; loaded resources released")
             } catch {
                 fail(error)
             }

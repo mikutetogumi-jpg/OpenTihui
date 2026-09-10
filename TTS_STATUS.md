@@ -61,6 +61,8 @@ The initial speaker-embedding path crashes inside the package's MLX FFT on the t
 
 The pinned 0.2.0 package also expects obsolete speech-tokenizer codebook keys (`_codebook.embedding_sum`) while the current official model uses `codebook.embed_sum` plus an inference-irrelevant `initialized` value. A narrow CI-applied patch corrects those mappings and the downsample convolution path before Xcode builds the package. The package version remains pinned at 0.2.0 and the patch is validated with `git apply --check` on every build.
 
+For iPhone diagnosis and lower peak graph pressure, the same narrow patch materializes and clears the MLX cache between the ICL CNN and Transformer layers, then the Downsample and Quantizer. Each boundary is persisted in the TTS debug log so a native Metal termination can be localized after relaunch. Cancelling a model load after an iOS memory warning now also releases the newly constructed pipeline instead of installing it after the unload request.
+
 ## Memory behavior
 
 - Loading TTS from the debug page explicitly unloads the active llama.cpp/GGUF model first.

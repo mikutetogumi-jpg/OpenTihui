@@ -46,6 +46,10 @@ final class Qwen3TTSEngine: TTSEngine, @unchecked Sendable {
         let loaded = try await Task.detached(priority: .userInitiated) {
             try Qwen3TTSPipeline(modelPath: directory)
         }.value
+        if Task.isCancelled {
+            await Task.detached(priority: .utility) { loaded.clearCache() }.value
+            throw CancellationError()
+        }
         let result = TTSLoadResult(
             elapsed: Date().timeIntervalSince(started),
             availableSpeakers: loaded.availableSpeakers.sorted(),

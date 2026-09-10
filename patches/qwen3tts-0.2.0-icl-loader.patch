@@ -1,8 +1,63 @@
 diff --git a/Sources/Qwen3TTS/Vocoder/Qwen3TTSAudioEncoder.swift b/Sources/Qwen3TTS/Vocoder/Qwen3TTSAudioEncoder.swift
-index 61bae8d..f351d6c 100644
+index 61bae8d..5de9037 100644
 --- a/Sources/Qwen3TTS/Vocoder/Qwen3TTSAudioEncoder.swift
 +++ b/Sources/Qwen3TTS/Vocoder/Qwen3TTSAudioEncoder.swift
-@@ -346,7 +346,8 @@ nonisolated public class EncoderDownsample: Module {
+@@ -3,6 +3,20 @@ import MLX
+ import MLXNN
+ import MLXFast
+ 
++private let qwen3TTSICLDiagnosticLock = NSLock()
++
++private func reportQwen3TTSICLStage(_ stage: String) {
++    qwen3TTSICLDiagnosticLock.lock()
++    defer { qwen3TTSICLDiagnosticLock.unlock() }
++    let defaults = UserDefaults.standard
++    let key = "openTihui.ttsDebug.recentLog"
++    var lines = defaults.stringArray(forKey: key) ?? []
++    lines.append("[\(Date().formatted(date: .omitted, time: .standard))] ICL encoder stage — \(stage)")
++    if lines.count > 80 { lines.removeFirst(lines.count - 80) }
++    defaults.set(lines, forKey: key)
++    defaults.synchronize()
++}
++
+ // MARK: - ELU Activation
+ 
+ nonisolated public class ELUActivation: Module, UnaryLayer {
+@@ -172,7 +186,8 @@ nonisolated public class MimiSEANetEncoder: Module {
+     /// Input: [B, 1, L] -> Output: [B, hidden_size, L/960]
+     public func callAsFunction(_ x: MLXArray) -> MLXArray {
+         var h = x
+-        for layer in layers {
++        for (index, layer) in layers.enumerated() {
++            reportQwen3TTSICLStage("CNN layer \(index) begin")
+             if let conv = layer as? MimiConv1d {
+                 h = conv(h)
+             } else if let resnet = layer as? MimiResnetBlock {
+@@ -180,6 +195,9 @@ nonisolated public class MimiSEANetEncoder: Module {
+             } else if let elu = layer as? ELUActivation {
+                 h = elu(h)
+             }
++            eval(h)
++            Memory.clearCache()
++            reportQwen3TTSICLStage("CNN layer \(index) complete")
+         }
+         return h
+     }
+@@ -327,8 +345,12 @@ nonisolated public class EncoderTransformer: Module {
+ 
+         var h = x
+         // No causal mask — encoder uses bidirectional attention
+-        for layer in layers {
++        for (index, layer) in layers.enumerated() {
++            reportQwen3TTSICLStage("Transformer layer \(index) begin")
+             h = layer(h, positionEmbeddings: positionEmbeddings, mask: nil)
++            eval(h)
++            Memory.clearCache()
++            reportQwen3TTSICLStage("Transformer layer \(index) complete")
+         }
+ 
+         return h
+@@ -346,7 +368,8 @@ nonisolated public class EncoderDownsample: Module {
              inChannels: config.hidden_size,
              outChannels: config.hidden_size,
              kernelSize: 2 * config.compress,
@@ -12,7 +67,42 @@ index 61bae8d..f351d6c 100644
          )
          super.init()
      }
-@@ -589,8 +590,8 @@ nonisolated public class Qwen3TTSAudioEncoder: Module {
+@@ -537,22 +560,34 @@ nonisolated public class Qwen3TTSAudioEncoder: Module {
+         }
+ 
+         // CNN encoder: [B, 1, L] -> [B, hidden_size, L/960]
++        reportQwen3TTSICLStage("CNN begin")
+         h = encoder(h)
++        reportQwen3TTSICLStage("CNN complete")
+ 
+         // Transpose to [B, T, hidden_size] for transformer
+         h = h.transposed(0, 2, 1)
+ 
+         // Encoder transformer (non-causal): [B, T, hidden_size] -> [B, T, hidden_size]
++        reportQwen3TTSICLStage("Transformer begin")
+         h = encoderTransformer(h)
++        reportQwen3TTSICLStage("Transformer complete")
+ 
+         // Transpose back to [B, hidden_size, T] for downsample
+         h = h.transposed(0, 2, 1)
+ 
+         // Downsample: [B, hidden_size, T] -> [B, hidden_size, T/2]
++        reportQwen3TTSICLStage("Downsample begin")
+         h = downsample(h)
++        eval(h)
++        Memory.clearCache()
++        reportQwen3TTSICLStage("Downsample complete")
+ 
+         // Quantize: [B, hidden_size, T/2] -> [B, numQuantizers, T/2]
++        reportQwen3TTSICLStage("Quantizer begin")
+         var codes = quantizer.encode(h)
++        eval(codes)
++        Memory.clearCache()
++        reportQwen3TTSICLStage("Quantizer complete")
+ 
+         // Keep only first validNumQuantizers
+         if codes.shape[1] > validNumQuantizers {
+@@ -589,8 +624,8 @@ nonisolated public class Qwen3TTSAudioEncoder: Module {
              let workingKey = String(key.dropFirst("encoder.".count))
  
              // Handle codebook data (cluster_usage + embedding_sum -> embed.weight)
@@ -23,7 +113,7 @@ index 61bae8d..f351d6c 100644
                  if parts.count == 2 {
                      let basePath = parts[0]
                      if codebookData[basePath] == nil {
-@@ -599,11 +600,15 @@ nonisolated public class Qwen3TTSAudioEncoder: Module {
+@@ -599,11 +634,15 @@ nonisolated public class Qwen3TTSAudioEncoder: Module {
                      if workingKey.contains("cluster_usage") {
                          codebookData[basePath]?["cluster_usage"] = v
                      } else {
@@ -40,7 +130,7 @@ index 61bae8d..f351d6c 100644
  
              // Convert snake_case to camelCase
              let components = workingKey.components(separatedBy: ".")
-@@ -611,7 +616,12 @@ nonisolated public class Qwen3TTSAudioEncoder: Module {
+@@ -611,7 +650,12 @@ nonisolated public class Qwen3TTSAudioEncoder: Module {
                  if Int(component) != nil { return component }
                  return snakeToCamel(component)
              }
@@ -54,7 +144,7 @@ index 61bae8d..f351d6c 100644
  
              // Transpose conv weights: safetensors stores [out, in, k], MLX Conv1d wants [out, k, in]
              if workingKey.contains("conv") && workingKey.hasSuffix(".weight") && v.ndim == 3 {
-@@ -628,7 +638,7 @@ nonisolated public class Qwen3TTSAudioEncoder: Module {
+@@ -628,7 +672,7 @@ nonisolated public class Qwen3TTSAudioEncoder: Module {
          let eps: Float = 1e-5
          for (basePath, data) in codebookData {
              if let clusterUsage = data["cluster_usage"],

@@ -241,8 +241,15 @@ final class TTSDebugViewModel: ObservableObject {
     }
 
     func handleMemoryWarning() {
-        append("MEMORY WARNING received — stopping TTS and releasing model")
-        stop()
+        mergePackageLogs()
+        if isLoading || isGenerating || isExtractingVoice {
+            // A memory warning is advisory. Cancelling here guaranteed an empty
+            // WAV even when iOS still had enough headroom to finish the active
+            // MLX operation. Let the operation finish or surface its own error.
+            append("MEMORY WARNING received during active TTS — continuing generation")
+            return
+        }
+        append("MEMORY WARNING received while idle — releasing TTS model")
         unload()
     }
 

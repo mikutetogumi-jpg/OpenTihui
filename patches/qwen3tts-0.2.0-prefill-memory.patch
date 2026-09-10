@@ -1,0 +1,66 @@
+warning: in the working copy of 'Sources/Qwen3TTS/Model/Qwen3Talker.swift', LF will be replaced by CRLF the next time Git touches it
+diff --git a/Sources/Qwen3TTS/Model/Qwen3Talker.swift b/Sources/Qwen3TTS/Model/Qwen3Talker.swift
+index 0e72b73..7136fc9 100644
+--- a/Sources/Qwen3TTS/Model/Qwen3Talker.swift
++++ b/Sources/Qwen3TTS/Model/Qwen3Talker.swift
+@@ -102,14 +102,33 @@ nonisolated public class Qwen3Talker: Module {
+         var newCaches: [KVCache] = []
+         var h = x
+
++        if L > 1 {
++            reportQwen3TTSGeneration("talker prefill begin; sequence = \(L), layers = \(layers.count)")
++        }
++
+         for (i, layer) in layers.enumerated() {
+             let layerCache: KVCache? = (cache != nil && i < cache!.count) ? cache![i] : nil
+             let (out, c) = layer(h, mask: mask, cache: layerCache, positionIds: positionIds)
++            if L > 1 {
++                // MLX is lazy. Without an eager boundary the whole multi-layer
++                // prefill graph remains live until token sampling, creating a
++                // large transient allocation on iOS.
++                eval(out, c.0, c.1)
++                Memory.clearCache()
++                if i == 0 || i == layers.count - 1 || (i + 1) % 4 == 0 {
++                    reportQwen3TTSGeneration("talker prefill layer \(i + 1)/\(layers.count) complete")
++                }
++            }
+             h = out
+             newCaches.append(c)
+         }
+
+         let output = norm(h)
++        if L > 1 {
++            eval(output)
++            Memory.clearCache()
++            reportQwen3TTSGeneration("talker prefill complete")
++        }
+
+         return (output, newCaches)
+     }
+@@ -416,6 +435,8 @@ nonisolated public class Qwen3Talker: Module {
+             let combinedTextIds = concatenated([pureRefIds, pureTargetIds], axis: 1)
+             var textEmbed = text_projection(text_embedding(combinedTextIds))
+             textEmbed = concatenated([textEmbed, ttsEosEmbed], axis: 1)
++            eval(textEmbed)
++            Memory.clearCache()
+
+             var refCodecEmbed = codec_embedding(MLXArray(firstCodes).expandedDimensions(axis: 0))
+             let usableGroups = min(refCodes.count, numCodeGroups)
+@@ -424,6 +445,8 @@ nonisolated public class Qwen3Talker: Module {
+                     guard refCodes[group].count == firstCodes.count else { continue }
+                     let groupCodes = MLXArray(refCodes[group]).expandedDimensions(axis: 0)
+                     refCodecEmbed = refCodecEmbed + code_predictor.codec_embedding[group - 1](groupCodes)
++                    eval(refCodecEmbed)
++                    Memory.clearCache()
+                 }
+             }
+             let codecBosEmbed = codec_embedding(
+@@ -443,6 +466,8 @@ nonisolated public class Qwen3Talker: Module {
+             )
+             let iclEmbed = concatenated([textWithCodecPad, codecWithTextPad], axis: 1)
+             inputEmbeds = concatenated([roleEmbed, combinedEmbed, iclEmbed], axis: 1)
++            eval(inputEmbeds)
++            Memory.clearCache()
+             trailingTextHidden = ttsPadEmbed
+             reportQwen3TTSGeneration(
+                 "ICL prompt ready; reference groups = \(usableGroups), frames = \(firstCodes.count), prefill = \(inputEmbeds.shape[1])"

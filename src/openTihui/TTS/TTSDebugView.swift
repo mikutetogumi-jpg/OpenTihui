@@ -288,8 +288,8 @@ final class TTSDebugViewModel: ObservableObject {
 struct TTSDebugView: View {
     @EnvironmentObject private var models: TTSModelManager
     @EnvironmentObject private var chat: ChatViewModel
+    @EnvironmentObject private var voiceProfiles: VoiceProfileStore
     @StateObject private var viewModel = TTSDebugViewModel()
-    @StateObject private var voiceProfiles = VoiceProfileStore()
     @State private var importing = false
     @State private var importingReferenceAudio = false
     @State private var exportFile: ExportFile?
@@ -483,6 +483,7 @@ struct TTSDebugView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
             viewModel.handleMemoryWarning()
         }
+        .onAppear { voiceProfiles.reload() }
         .onDisappear { viewModel.stop() }
     }
 

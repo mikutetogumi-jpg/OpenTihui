@@ -1,0 +1,53 @@
+warning: in the working copy of 'Sources/Qwen3TTS/Tokenizer/Qwen3Tokenizer.swift', LF will be replaced by CRLF the next time Git touches it
+diff --git a/Sources/Qwen3TTS/Tokenizer/Qwen3Tokenizer.swift b/Sources/Qwen3TTS/Tokenizer/Qwen3Tokenizer.swift
+index da5ee83..5b2afce 100644
+--- a/Sources/Qwen3TTS/Tokenizer/Qwen3Tokenizer.swift
++++ b/Sources/Qwen3TTS/Tokenizer/Qwen3Tokenizer.swift
+@@ -11,6 +11,24 @@ public class Qwen3Tokenizer {
+     private var cache: [String: [String]] = [:]
+     private let maxCacheSize = 10000
+
++    /// GPT-2/Qwen byte-level BPE maps each UTF-8 byte to a reversible Unicode
++    /// scalar before applying merges. Treating Swift grapheme clusters as BPE
++    /// symbols drops CJK text because raw Chinese characters are not vocab keys.
++    private static let byteEncoder: [UInt8: String] = {
++        var bytes = Array(33...126) + Array(161...172) + Array(174...255)
++        var scalars = bytes
++        var extra = 0
++        let directBytes = Set(bytes)
++        for byte in 0...255 where !directBytes.contains(byte) {
++            bytes.append(byte)
++            scalars.append(256 + extra)
++            extra += 1
++        }
++        return Dictionary(uniqueKeysWithValues: zip(bytes, scalars).compactMap { byte, scalar in
++            UnicodeScalar(scalar).map { (UInt8(byte), String(Character($0))) }
++        })
++    }()
++
+     // Special tokens that should be looked up directly, not BPE'd
+     // These are sorted by length (longest first) to match greedily
+     private var specialTokens: [String] = []
+@@ -322,18 +340,10 @@ public class Qwen3Tokenizer {
+     private func bpe(_ token: String) -> [String] {
+         if let cached = cache[token] { return cached }
+
+-        // Initial split into characters (grapheme clusters)
+-        var word: [String] = token.map { String($0) }
+-
+-        // Map special characters to their vocab representation
+-        // GPT-2/Qwen style: space -> Ġ, newline -> Ċ
+-        let spaceChar = vocab["Ġ"] != nil ? "Ġ" : " "
+-        let newlineChar = vocab["Ċ"] != nil ? "Ċ" : "\n"
+-        word = word.map { char in
+-            if char == " " { return spaceChar }
+-            if char == "\n" { return newlineChar }
+-            return char
+-        }
++        // Byte-level BPE must operate on the encoded UTF-8 byte symbols. This
++        // also maps space/newline to Ġ/Ċ as expected by Qwen's vocabulary.
++        let byteEncoded = token.utf8.compactMap { Qwen3Tokenizer.byteEncoder[$0] }.joined()
++        var word: [String] = byteEncoded.map { String($0) }
+
+         if word.isEmpty { return [] }
+

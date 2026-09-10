@@ -17,6 +17,7 @@ final class TTSDebugViewModel: ObservableObject {
     @Published var temperature: Double = 0.7
     @Published private(set) var speakers: [String] = []
     @Published private(set) var supportsVoiceCloning = false
+    @Published private(set) var supportsICL = false
     @Published private(set) var loadedModelID: String?
     @Published private(set) var isLoading = false
     @Published private(set) var isGenerating = false
@@ -56,8 +57,9 @@ final class TTSDebugViewModel: ObservableObject {
                 loadTime = result.elapsed
                 speakers = result.availableSpeakers
                 supportsVoiceCloning = result.supportsVoiceCloning
+                supportsICL = result.supportsICL
                 speaker = speakers.first ?? ""
-                append("Loaded \(model.name) in \(format(result.elapsed)) s; voice clone = \(result.supportsVoiceCloning)")
+                append("Loaded \(model.name) in \(format(result.elapsed)) s; speaker embedding = \(result.supportsVoiceCloning), ICL = \(result.supportsICL)")
                 appendMemory("After load", bytes: availableMemory())
                 if speakers.isEmpty {
                     append("No built-in speakers reported; this model may require a voice reference in the later Voice Clone phase")
@@ -79,8 +81,8 @@ final class TTSDebugViewModel: ObservableObject {
 
     func createVoiceProfile(in store: VoiceProfileStore) {
         guard !isLoading, !isGenerating, !isExtractingVoice else { return }
-        guard supportsVoiceCloning else {
-            errorMessage = Qwen3TTSError.speakerEmbeddingUnavailable.localizedDescription
+        guard supportsICL else {
+            errorMessage = Qwen3TTSError.referenceAudioEncodingUnavailable.localizedDescription
             return
         }
         guard let referenceAudioURL else {
@@ -99,27 +101,27 @@ final class TTSDebugViewModel: ObservableObject {
         }
         isExtractingVoice = true
         errorMessage = nil
-        append("Speaker embedding extraction started")
+        append("ICL reference audio encoding started")
         workTask = Task {
             do {
                 let audio = try await ReferenceAudioLoader.loadForSpeakerEmbedding(from: referenceAudioURL)
                 append("Reference WAV decoded — \(format(audio.duration)) s, \(audio.samples.count) samples at 24 kHz")
-                appendMemory("Before speaker embedding cache clear", bytes: availableMemory())
+                appendMemory("Before ICL audio encoder cache clear", bytes: availableMemory())
                 await engine.clearCache()
-                appendMemory("Before speaker embedding eval", bytes: availableMemory())
-                append("Entering Qwen3-TTS speaker encoder")
-                let embedding = try await engine.extractSpeakerEmbedding(audioSamples: audio.samples)
-                appendMemory("After speaker embedding eval", bytes: availableMemory())
+                appendMemory("Before ICL audio encoder eval", bytes: availableMemory())
+                append("Entering Qwen3-TTS ICL audio encoder")
+                let referenceCodes = try await engine.encodeReferenceAudio(audioSamples: audio.samples)
+                appendMemory("After ICL audio encoder eval", bytes: availableMemory())
                 let profile = try await store.create(
                     name: trimmedName,
                     referenceAudio: referenceAudioURL,
                     referenceText: trimmedText,
                     language: language.rawValue,
-                    embedding: embedding
+                    referenceCodes: referenceCodes
                 )
-                append("Voice Profile saved — \(profile.name), embedding dimensions = \(embedding.count)")
+                append("Voice Profile saved — \(profile.name), quantizers = \(referenceCodes.count), frames = \(referenceCodes.first?.count ?? 0)")
             } catch is CancellationError {
-                append("Speaker embedding extraction cancelled")
+                append("ICL reference audio encoding cancelled")
             } catch {
                 fail(error)
             }
@@ -134,13 +136,20 @@ final class TTSDebugViewModel: ObservableObject {
             return
         }
         var embedding: [Float]?
+        var referenceTranscript: String?
+        var referenceAudioCodes: [[Int32]]?
         if speakers.isEmpty {
-            guard supportsVoiceCloning, let profile = voiceProfiles.currentProfile else {
+            guard (supportsICL || supportsVoiceCloning), let profile = voiceProfiles.currentProfile else {
                 errorMessage = Qwen3TTSError.voiceReferenceRequired.localizedDescription
                 return
             }
             do {
-                embedding = try voiceProfiles.loadEmbedding(for: profile)
+                if profile.referenceCodesPath != nil {
+                    referenceAudioCodes = try voiceProfiles.loadReferenceCodes(for: profile)
+                    referenceTranscript = profile.referenceText
+                } else {
+                    embedding = try voiceProfiles.loadEmbedding(for: profile)
+                }
                 append("Using Voice Profile — \(profile.name)")
             } catch {
                 fail(error)
@@ -160,6 +169,8 @@ final class TTSDebugViewModel: ObservableObject {
             language: language,
             speaker: speaker,
             speakerEmbedding: embedding,
+            referenceTranscript: referenceTranscript,
+            referenceAudioCodes: referenceAudioCodes,
             temperature: Float(temperature)
         )
         append("Generate started; language = \(language.rawValue), output = \(output.lastPathComponent)")
@@ -214,6 +225,7 @@ final class TTSDebugViewModel: ObservableObject {
             loadedModelID = nil
             speakers = []
             supportsVoiceCloning = false
+            supportsICL = false
             speaker = ""
             isLoading = false
             appendMemory("After unload", bytes: availableMemory())
@@ -328,7 +340,7 @@ struct TTSDebugView: View {
                 Text("Imports a complete local model directory into Documents/TTSModels. Loading TTS first unloads the active GGUF model.")
             }
 
-            if viewModel.supportsVoiceCloning {
+            if viewModel.supportsICL {
                 Section {
                     if voiceProfiles.profiles.isEmpty {
                         Text("No Voice Profiles saved").foregroundStyle(.secondary)
@@ -368,7 +380,7 @@ struct TTSDebugView: View {
                         viewModel.createVoiceProfile(in: voiceProfiles)
                     } label: {
                         Label(
-                            viewModel.isExtractingVoice ? "Extracting…" : "Extract & Save Voice Profile",
+                            viewModel.isExtractingVoice ? "Encoding…" : "Encode & Save Voice Profile",
                             systemImage: "person.wave.2"
                         )
                     }
@@ -379,7 +391,7 @@ struct TTSDebugView: View {
                 } header: {
                     Text("Voice Clone")
                 } footer: {
-                    Text("Speaker Embedding mode: use a clean 5–10 second WAV and enter its exact transcript. The reference audio and embedding remain on this device.")
+                    Text("ICL Reference Audio mode: use a clean 2–8 second WAV and enter its exact transcript. The audio and encoded reference remain on this device.")
                 }
             }
 

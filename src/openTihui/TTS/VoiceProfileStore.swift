@@ -10,7 +10,8 @@ struct VoiceProfile: Identifiable, Codable, Hashable, Sendable {
     let name: String
     let referenceAudioPath: String
     let referenceText: String
-    let speakerEmbeddingPath: String
+    let speakerEmbeddingPath: String?
+    let referenceCodesPath: String?
     let language: String
 }
 
@@ -18,6 +19,7 @@ enum VoiceProfileError: LocalizedError {
     case emptyName
     case emptyTranscript
     case missingEmbedding
+    case missingReferenceCodes
     case invalidProfile
 
     var errorDescription: String? {
@@ -25,6 +27,7 @@ enum VoiceProfileError: LocalizedError {
         case .emptyName: return "Enter a name for the Voice Profile."
         case .emptyTranscript: return "Enter the exact transcript of the reference WAV."
         case .missingEmbedding: return "Extract a speaker embedding before saving the Voice Profile."
+        case .missingReferenceCodes: return "Encode the reference audio before saving the Voice Profile."
         case .invalidProfile: return "The saved Voice Profile is incomplete or damaged."
         }
     }
@@ -63,23 +66,27 @@ final class VoiceProfileStore: ObservableObject {
         referenceAudio source: URL,
         referenceText: String,
         language: String,
-        embedding: [Float]
+        referenceCodes: [[Int32]]
     ) async throws -> VoiceProfile {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedText = referenceText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else { throw VoiceProfileError.emptyName }
         guard !trimmedText.isEmpty else { throw VoiceProfileError.emptyTranscript }
-        guard !embedding.isEmpty else { throw VoiceProfileError.missingEmbedding }
+        guard !referenceCodes.isEmpty, referenceCodes.allSatisfy({ !$0.isEmpty }) else {
+            throw VoiceProfileError.missingReferenceCodes
+        }
 
         let id = UUID()
         let directory = Self.profilesDirectory.appendingPathComponent(id.uuidString, isDirectory: true)
         let audioName = "reference.\(source.pathExtension.lowercased())"
+        let codesName = "reference-codes.json"
         let profile = VoiceProfile(
             id: id,
             name: trimmedName,
             referenceAudioPath: audioName,
             referenceText: trimmedText,
-            speakerEmbeddingPath: "speaker-embedding.json",
+            speakerEmbeddingPath: nil,
+            referenceCodesPath: codesName,
             language: language
         )
         try await Task.detached(priority: .userInitiated) {
@@ -91,8 +98,8 @@ final class VoiceProfileStore: ObservableObject {
                     at: source,
                     to: directory.appendingPathComponent(audioName)
                 )
-                try JSONEncoder().encode(embedding).write(
-                    to: directory.appendingPathComponent(profile.speakerEmbeddingPath),
+                try JSONEncoder().encode(referenceCodes).write(
+                    to: directory.appendingPathComponent(codesName),
                     options: .atomic
                 )
                 let encoder = JSONEncoder()
@@ -112,13 +119,26 @@ final class VoiceProfileStore: ObservableObject {
     }
 
     func loadEmbedding(for profile: VoiceProfile) throws -> [Float] {
-        let url = profileDirectory(profile).appendingPathComponent(profile.speakerEmbeddingPath)
+        guard let path = profile.speakerEmbeddingPath else { throw VoiceProfileError.invalidProfile }
+        let url = profileDirectory(profile).appendingPathComponent(path)
         guard let data = try? Data(contentsOf: url),
               let embedding = try? JSONDecoder().decode([Float].self, from: data),
               !embedding.isEmpty else {
             throw VoiceProfileError.invalidProfile
         }
         return embedding
+    }
+
+    func loadReferenceCodes(for profile: VoiceProfile) throws -> [[Int32]] {
+        guard let path = profile.referenceCodesPath else { throw VoiceProfileError.invalidProfile }
+        let url = profileDirectory(profile).appendingPathComponent(path)
+        guard let data = try? Data(contentsOf: url),
+              let codes = try? JSONDecoder().decode([[Int32]].self, from: data),
+              !codes.isEmpty,
+              codes.allSatisfy({ !$0.isEmpty }) else {
+            throw VoiceProfileError.invalidProfile
+        }
+        return codes
     }
 
     func delete(_ profile: VoiceProfile) throws {
@@ -141,7 +161,7 @@ final class VoiceProfileStore: ObservableObject {
                   let profile = try? JSONDecoder().decode(VoiceProfile.self, from: data),
                   profile.id.uuidString == directory.lastPathComponent,
                   fileManager.fileExists(atPath: directory.appendingPathComponent(profile.referenceAudioPath).path),
-                  fileManager.fileExists(atPath: directory.appendingPathComponent(profile.speakerEmbeddingPath).path)
+                  hasConditioningFile(for: profile, in: directory)
             else { return nil }
             return profile
         }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
@@ -153,5 +173,17 @@ final class VoiceProfileStore: ObservableObject {
 
     private func profileDirectory(_ profile: VoiceProfile) -> URL {
         Self.profilesDirectory.appendingPathComponent(profile.id.uuidString, isDirectory: true)
+    }
+
+    private func hasConditioningFile(for profile: VoiceProfile, in directory: URL) -> Bool {
+        if let path = profile.referenceCodesPath,
+           fileManager.fileExists(atPath: directory.appendingPathComponent(path).path) {
+            return true
+        }
+        if let path = profile.speakerEmbeddingPath,
+           fileManager.fileExists(atPath: directory.appendingPathComponent(path).path) {
+            return true
+        }
+        return false
     }
 }

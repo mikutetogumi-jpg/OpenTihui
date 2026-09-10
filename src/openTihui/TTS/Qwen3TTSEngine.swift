@@ -11,6 +11,7 @@ enum Qwen3TTSError: LocalizedError {
     case emptyText
     case voiceReferenceRequired
     case speakerEmbeddingUnavailable
+    case referenceAudioEncodingUnavailable
     case emptyAudio
 
     var errorDescription: String? {
@@ -21,6 +22,8 @@ enum Qwen3TTSError: LocalizedError {
             return "This Base model has no built-in speaker. Select or create a Voice Profile first."
         case .speakerEmbeddingUnavailable:
             return "The loaded model could not extract a speaker embedding from this reference audio."
+        case .referenceAudioEncodingUnavailable:
+            return "The loaded model could not encode this reference audio for ICL Voice Clone."
         case .emptyAudio:
             return "Qwen3-TTS generated an empty WAV. Playback was skipped."
         }
@@ -46,12 +49,14 @@ final class Qwen3TTSEngine: TTSEngine, @unchecked Sendable {
         let result = TTSLoadResult(
             elapsed: Date().timeIntervalSince(started),
             availableSpeakers: loaded.availableSpeakers.sorted(),
-            supportsVoiceCloning: loaded.supportsVoiceCloning
+            supportsVoiceCloning: loaded.supportsVoiceCloning,
+            supportsICL: loaded.supportsICL
         )
         locked { pipeline = loaded }
         LlamaBridge.appendLogNote(
             "openTihui TTS: load completed — \(String(format: "%.2f", result.elapsed)) s, " +
-            "speakers = \(result.availableSpeakers.count), voice clone = \(result.supportsVoiceCloning)"
+            "speakers = \(result.availableSpeakers.count), speaker embedding = \(result.supportsVoiceCloning), " +
+            "ICL = \(result.supportsICL)"
         )
         return result
     }
@@ -77,6 +82,8 @@ final class Qwen3TTSEngine: TTSEngine, @unchecked Sendable {
                 text: text,
                 speaker: request.speaker,
                 speakerEmbedding: request.speakerEmbedding,
+                referenceTranscript: request.referenceTranscript,
+                referenceAudioCodes: request.referenceAudioCodes,
                 outputURL: outputURL,
                 temperature: request.temperature,
                 onProgress: { value in onProgress(Int((value * 100).rounded())) }
@@ -110,21 +117,22 @@ final class Qwen3TTSEngine: TTSEngine, @unchecked Sendable {
         return result
     }
 
-    func extractSpeakerEmbedding(audioSamples: [Float]) async throws -> [Float] {
+    func encodeReferenceAudio(audioSamples: [Float]) async throws -> [[Int32]] {
         let loaded = locked { pipeline }
         guard let loaded else { throw Qwen3TTSError.notLoaded }
-        let embedding = await Task.detached(priority: .userInitiated) {
+        let codes = await Task.detached(priority: .userInitiated) {
             autoreleasepool {
-                loaded.extractSpeakerEmbedding(audioSamples: audioSamples)
+                loaded.encodeReferenceAudio(audioSamples: audioSamples)
             }
         }.value
-        guard let embedding, !embedding.isEmpty else {
-            throw Qwen3TTSError.speakerEmbeddingUnavailable
+        guard let codes, !codes.isEmpty, codes.allSatisfy({ !$0.isEmpty }) else {
+            throw Qwen3TTSError.referenceAudioEncodingUnavailable
         }
         LlamaBridge.appendLogNote(
-            "openTihui TTS: speaker embedding extracted — dimensions = \(embedding.count)"
+            "openTihui TTS: ICL reference audio encoded — quantizers = \(codes.count), " +
+            "frames = \(codes.first?.count ?? 0)"
         )
-        return embedding
+        return codes
     }
 
     func stop() {

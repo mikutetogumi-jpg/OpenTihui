@@ -4,7 +4,7 @@ Updated: 2026-09-10
 
 ## Scope
 
-The isolated developer TTS page now includes a minimal speaker-embedding Voice Clone test. It does not add character support, automatic chat speech, reference-audio ICL generation, or any change to `LlamaBridge.mm`.
+The isolated developer TTS page now includes a minimal ICL reference-audio Voice Clone test. It does not add character support, automatic chat speech, or any change to `LlamaBridge.mm`.
 
 ## Implementation choice
 
@@ -26,8 +26,8 @@ No Hugging Face download code was added in this round. TTS model directories are
 - `TTSModelManager.swift`: dedicated `Documents/TTSModels` store, validation, list, current selection, metadata, size, and deletion. It does not use the GGUF model list.
 - `AudioPlayer.swift`: AVFoundation playback and stop.
 - `TTSDebugView.swift`: Settings → Developer / Experimental → Qwen3-TTS Test.
-- `ReferenceAudioLoader.swift`: decodes a selected WAV and converts it to 24 kHz mono Float32 samples, matching the sample rate used internally by the pinned package's speaker encoder.
-- `VoiceProfileStore.swift`: saves the reference WAV, exact transcript, language, and extracted speaker embedding under `Documents/VoiceProfiles`.
+- `ReferenceAudioLoader.swift`: decodes a selected WAV and converts it to 24 kHz mono Float32 samples, matching the pinned package's ICL audio encoder.
+- `VoiceProfileStore.swift`: saves the reference WAV, exact transcript, language, and package-produced ICL reference codes under `Documents/VoiceProfiles`.
 
 ## Model directory format
 
@@ -53,11 +53,11 @@ Test model: `mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit`. The real-device smoke
 
 1. Load the Base TTS model.
 2. Select a clean 2–8 second local WAV and enter its exact transcript.
-3. Extract and save a Voice Profile. The package receives 24 kHz mono samples and returns the stored speaker embedding.
+3. Encode and save a Voice Profile. The package receives 24 kHz mono samples and returns stored ICL reference codes.
 4. Select the saved profile and generate a short target sentence.
-5. The embedding is passed to the package's existing `generateToFile` API; no MLX inference implementation is duplicated in the app.
+5. The transcript and reference codes are passed to the package's existing `generateToFile` API; no MLX inference implementation is duplicated in the app.
 
-The first implementation deliberately uses speaker-embedding conditioning only. The package's reference-audio/ICL path remains a later experiment if device testing shows that speaker embedding alone does not preserve the desired style or prosody.
+The initial speaker-embedding path crashes inside the package's MLX FFT on the tested iPhone. The debug path therefore uses the package's existing ICL reference-audio encoder, which bypasses that Speaker Encoder FFT without replacing any MLX inference code.
 
 ## Memory behavior
 

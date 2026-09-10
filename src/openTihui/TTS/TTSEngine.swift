@@ -22,6 +22,8 @@ struct TTSSynthesisRequest: Sendable {
     let language: TTSLanguage
     let speaker: String
     let speakerEmbedding: [Float]?
+    let referenceTranscript: String?
+    let referenceAudioCodes: [[Int32]]?
     let temperature: Float
 }
 
@@ -29,6 +31,7 @@ struct TTSLoadResult: Sendable {
     let elapsed: TimeInterval
     let availableSpeakers: [String]
     let supportsVoiceCloning: Bool
+    let supportsICL: Bool
 }
 
 struct TTSSynthesisResult: Sendable {
@@ -57,7 +60,7 @@ protocol TTSEngine: AnyObject {
         to outputURL: URL,
         onProgress: @escaping @Sendable (Int) -> Void
     ) async throws -> TTSSynthesisResult
-    func extractSpeakerEmbedding(audioSamples: [Float]) async throws -> [Float]
+    func encodeReferenceAudio(audioSamples: [Float]) async throws -> [[Int32]]
     func stop()
     func clearCache() async
     func unload() async

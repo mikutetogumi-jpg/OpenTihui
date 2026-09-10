@@ -1,5 +1,5 @@
 diff --git a/Sources/Qwen3TTS/Vocoder/Qwen3TTSAudioEncoder.swift b/Sources/Qwen3TTS/Vocoder/Qwen3TTSAudioEncoder.swift
-index 61bae8d..5de9037 100644
+index 61bae8d..8f658f4 100644
 --- a/Sources/Qwen3TTS/Vocoder/Qwen3TTSAudioEncoder.swift
 +++ b/Sources/Qwen3TTS/Vocoder/Qwen3TTSAudioEncoder.swift
 @@ -3,6 +3,20 @@ import MLX
@@ -67,7 +67,52 @@ index 61bae8d..5de9037 100644
          )
          super.init()
      }
-@@ -537,22 +560,34 @@ nonisolated public class Qwen3TTSAudioEncoder: Module {
+@@ -413,6 +436,28 @@ nonisolated public class EncoderResidualVectorQuantizer: Module {
+ 
+         return stacked(allCodes, axis: 0)  // [numQuantizers, B, T]
+     }
++
++    /// Encode only the first codebook. Qwen3-TTS ICL consumes only the first
++    /// semantic code stream, so evaluating the remaining acoustic codebooks
++    /// wastes a large amount of memory on iOS.
++    /// - Parameter x: [B, C, T] (channels-first)
++    /// - Returns: codes [1, B, T]
++    public func encodeFirstCodebook(_ x: MLXArray) -> MLXArray {
++        reportQwen3TTSICLStage("Semantic projection begin")
++        var projected = x.transposed(0, 2, 1)   // [B, T, C]
++        projected = inputProj(projected)          // [B, T, dim]
++        eval(projected)
++        Memory.clearCache()
++        reportQwen3TTSICLStage("Semantic projection complete")
++
++        reportQwen3TTSICLStage("Semantic codebook begin")
++        let indices = layers[0].codebook.encode(projected)  // [B, T]
++        eval(indices)
++        Memory.clearCache()
++        reportQwen3TTSICLStage("Semantic codebook complete")
++
++        return indices.expandedDimensions(axis: 0)  // [1, B, T]
++    }
+ }
+ 
+ // MARK: - Encoder Split Residual Vector Quantizer
+@@ -450,6 +495,15 @@ nonisolated public class EncoderSplitResidualVectorQuantizer: Module {
+         let allCodes = concatenated([semanticCodes, acousticCodes], axis: 0) // [numQ, B, T]
+         return allCodes.transposed(1, 0, 2)  // [B, numQ, T]
+     }
++
++    /// Encode the semantic stream used by Qwen3-TTS ICL. The talker reads
++    /// `refCodes[0]` only; acoustic reference codes are not consumed.
++    /// - Parameter x: [B, C, T] (channels-first)
++    /// - Returns: codes [B, 1, T]
++    public func encodeSemantic(_ x: MLXArray) -> MLXArray {
++        semanticResidualVectorQuantizer.encodeFirstCodebook(x)
++            .transposed(1, 0, 2)
++    }
+ }
+ 
+ // MARK: - Qwen3TTSAudioEncoder
+@@ -537,27 +591,36 @@ nonisolated public class Qwen3TTSAudioEncoder: Module {
          }
  
          // CNN encoder: [B, 1, L] -> [B, hidden_size, L/960]
@@ -89,20 +134,30 @@ index 61bae8d..5de9037 100644
          // Downsample: [B, hidden_size, T] -> [B, hidden_size, T/2]
 +        reportQwen3TTSICLStage("Downsample begin")
          h = downsample(h)
+-
+-        // Quantize: [B, hidden_size, T/2] -> [B, numQuantizers, T/2]
+-        var codes = quantizer.encode(h)
+-
+-        // Keep only first validNumQuantizers
+-        if codes.shape[1] > validNumQuantizers {
+-            codes = codes[0..., 0..<validNumQuantizers, 0...]
+-        }
 +        eval(h)
 +        Memory.clearCache()
 +        reportQwen3TTSICLStage("Downsample complete")
- 
-         // Quantize: [B, hidden_size, T/2] -> [B, numQuantizers, T/2]
++
++        // Qwen3-TTS ICL consumes only refCodes[0]. Avoid evaluating the 31
++        // acoustic codebooks that are discarded by the talker and can exceed
++        // the iOS memory limit.
 +        reportQwen3TTSICLStage("Quantizer begin")
-         var codes = quantizer.encode(h)
++        let codes = quantizer.encodeSemantic(h)
 +        eval(codes)
 +        Memory.clearCache()
 +        reportQwen3TTSICLStage("Quantizer complete")
  
-         // Keep only first validNumQuantizers
-         if codes.shape[1] > validNumQuantizers {
-@@ -589,8 +624,8 @@ nonisolated public class Qwen3TTSAudioEncoder: Module {
+         return codes
+     }
+@@ -589,8 +652,8 @@ nonisolated public class Qwen3TTSAudioEncoder: Module {
              let workingKey = String(key.dropFirst("encoder.".count))
  
              // Handle codebook data (cluster_usage + embedding_sum -> embed.weight)
@@ -113,7 +168,7 @@ index 61bae8d..5de9037 100644
                  if parts.count == 2 {
                      let basePath = parts[0]
                      if codebookData[basePath] == nil {
-@@ -599,11 +634,15 @@ nonisolated public class Qwen3TTSAudioEncoder: Module {
+@@ -599,11 +662,15 @@ nonisolated public class Qwen3TTSAudioEncoder: Module {
                      if workingKey.contains("cluster_usage") {
                          codebookData[basePath]?["cluster_usage"] = v
                      } else {
@@ -130,7 +185,7 @@ index 61bae8d..5de9037 100644
  
              // Convert snake_case to camelCase
              let components = workingKey.components(separatedBy: ".")
-@@ -611,7 +650,12 @@ nonisolated public class Qwen3TTSAudioEncoder: Module {
+@@ -611,7 +678,12 @@ nonisolated public class Qwen3TTSAudioEncoder: Module {
                  if Int(component) != nil { return component }
                  return snakeToCamel(component)
              }
@@ -144,7 +199,7 @@ index 61bae8d..5de9037 100644
  
              // Transpose conv weights: safetensors stores [out, in, k], MLX Conv1d wants [out, k, in]
              if workingKey.contains("conv") && workingKey.hasSuffix(".weight") && v.ndim == 3 {
-@@ -628,7 +672,7 @@ nonisolated public class Qwen3TTSAudioEncoder: Module {
+@@ -628,7 +700,7 @@ nonisolated public class Qwen3TTSAudioEncoder: Module {
          let eps: Float = 1e-5
          for (basePath, data) in codebookData {
              if let clusterUsage = data["cluster_usage"],

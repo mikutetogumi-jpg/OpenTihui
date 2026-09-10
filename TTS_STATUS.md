@@ -63,6 +63,8 @@ The pinned 0.2.0 package also expects obsolete speech-tokenizer codebook keys (`
 
 For iPhone diagnosis and lower peak graph pressure, the same narrow patch materializes and clears the MLX cache between the ICL CNN and Transformer layers, then the Downsample and Quantizer. Each boundary is persisted in the TTS debug log so a native Metal termination can be localized after relaunch. Cancelling a model load after an iOS memory warning now also releases the newly constructed pipeline instead of installing it after the unload request.
 
+Real-device staged logs localized the next native termination to the residual-vector Quantizer. The package originally evaluated one semantic plus 31 acoustic codebooks and only afterward discarded all but the valid streams, while the Qwen3-TTS ICL talker consumes only `refCodes[0]`. The CI patch now evaluates only that required semantic codebook, materializes the projection and code indices separately, and records both boundaries. This preserves the exact ICL input used downstream while removing 31 unused codebook evaluations from the iPhone memory peak.
+
 ## Memory behavior
 
 - Loading TTS from the debug page explicitly unloads the active llama.cpp/GGUF model first.

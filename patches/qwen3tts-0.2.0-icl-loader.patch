@@ -1,5 +1,5 @@
 diff --git a/Sources/Qwen3TTS/Vocoder/Qwen3TTSAudioEncoder.swift b/Sources/Qwen3TTS/Vocoder/Qwen3TTSAudioEncoder.swift
-index 61bae8d..8f658f4 100644
+index 61bae8d..20ae997 100644
 --- a/Sources/Qwen3TTS/Vocoder/Qwen3TTSAudioEncoder.swift
 +++ b/Sources/Qwen3TTS/Vocoder/Qwen3TTSAudioEncoder.swift
 @@ -3,6 +3,20 @@ import MLX
@@ -67,7 +67,7 @@ index 61bae8d..8f658f4 100644
          )
          super.init()
      }
-@@ -413,6 +436,28 @@ nonisolated public class EncoderResidualVectorQuantizer: Module {
+@@ -413,6 +436,62 @@ nonisolated public class EncoderResidualVectorQuantizer: Module {
  
          return stacked(allCodes, axis: 0)  // [numQuantizers, B, T]
      }
@@ -85,18 +85,52 @@ index 61bae8d..8f658f4 100644
 +        Memory.clearCache()
 +        reportQwen3TTSICLStage("Semantic projection complete")
 +
-+        reportQwen3TTSICLStage("Semantic codebook begin")
-+        let indices = layers[0].codebook.encode(projected)  // [B, T]
-+        eval(indices)
++        // MLX's reduction over the 2048-entry codebook can exceed the Metal
++        // threadgroup limit on iPhone GPUs. This final nearest-neighbour step
++        // is small for a short voice reference, so evaluate it on the CPU.
++        reportQwen3TTSICLStage("Semantic codebook CPU search begin")
++        let codebook = layers[0].codebook
++        let codebookWeight = codebook.embed.weight
++        eval(codebookWeight)
++
++        let batchSize = projected.shape[0]
++        let timeSteps = projected.shape[1]
++        let vectorDimension = projected.shape[2]
++        let vectors = projected.asArray(Float.self)
++        let embeddings = codebookWeight.asArray(Float.self)
++        var nearestCodes = [Int32](repeating: 0, count: batchSize * timeSteps)
++
++        for vectorIndex in 0..<(batchSize * timeSteps) {
++            let vectorOffset = vectorIndex * vectorDimension
++            var bestCode = 0
++            var bestDistance = Float.greatestFiniteMagnitude
++
++            for codeIndex in 0..<codebook.codebookSize {
++                let codeOffset = codeIndex * vectorDimension
++                var distance: Float = 0
++                for dimensionIndex in 0..<vectorDimension {
++                    let delta = vectors[vectorOffset + dimensionIndex]
++                        - embeddings[codeOffset + dimensionIndex]
++                    distance += delta * delta
++                }
++                if distance < bestDistance {
++                    bestDistance = distance
++                    bestCode = codeIndex
++                }
++            }
++            nearestCodes[vectorIndex] = Int32(bestCode)
++        }
++
++        let indices = MLXArray(nearestCodes).reshaped([batchSize, timeSteps])
 +        Memory.clearCache()
-+        reportQwen3TTSICLStage("Semantic codebook complete")
++        reportQwen3TTSICLStage("Semantic codebook CPU search complete")
 +
 +        return indices.expandedDimensions(axis: 0)  // [1, B, T]
 +    }
  }
  
  // MARK: - Encoder Split Residual Vector Quantizer
-@@ -450,6 +495,15 @@ nonisolated public class EncoderSplitResidualVectorQuantizer: Module {
+@@ -450,6 +529,15 @@ nonisolated public class EncoderSplitResidualVectorQuantizer: Module {
          let allCodes = concatenated([semanticCodes, acousticCodes], axis: 0) // [numQ, B, T]
          return allCodes.transposed(1, 0, 2)  // [B, numQ, T]
      }
@@ -112,7 +146,7 @@ index 61bae8d..8f658f4 100644
  }
  
  // MARK: - Qwen3TTSAudioEncoder
-@@ -537,27 +591,36 @@ nonisolated public class Qwen3TTSAudioEncoder: Module {
+@@ -537,27 +625,36 @@ nonisolated public class Qwen3TTSAudioEncoder: Module {
          }
  
          // CNN encoder: [B, 1, L] -> [B, hidden_size, L/960]
@@ -157,7 +191,7 @@ index 61bae8d..8f658f4 100644
  
          return codes
      }
-@@ -589,8 +652,8 @@ nonisolated public class Qwen3TTSAudioEncoder: Module {
+@@ -589,8 +686,8 @@ nonisolated public class Qwen3TTSAudioEncoder: Module {
              let workingKey = String(key.dropFirst("encoder.".count))
  
              // Handle codebook data (cluster_usage + embedding_sum -> embed.weight)
@@ -168,7 +202,7 @@ index 61bae8d..8f658f4 100644
                  if parts.count == 2 {
                      let basePath = parts[0]
                      if codebookData[basePath] == nil {
-@@ -599,11 +662,15 @@ nonisolated public class Qwen3TTSAudioEncoder: Module {
+@@ -599,11 +696,15 @@ nonisolated public class Qwen3TTSAudioEncoder: Module {
                      if workingKey.contains("cluster_usage") {
                          codebookData[basePath]?["cluster_usage"] = v
                      } else {
@@ -185,7 +219,7 @@ index 61bae8d..8f658f4 100644
  
              // Convert snake_case to camelCase
              let components = workingKey.components(separatedBy: ".")
-@@ -611,7 +678,12 @@ nonisolated public class Qwen3TTSAudioEncoder: Module {
+@@ -611,7 +712,12 @@ nonisolated public class Qwen3TTSAudioEncoder: Module {
                  if Int(component) != nil { return component }
                  return snakeToCamel(component)
              }
@@ -199,7 +233,7 @@ index 61bae8d..8f658f4 100644
  
              // Transpose conv weights: safetensors stores [out, in, k], MLX Conv1d wants [out, k, in]
              if workingKey.contains("conv") && workingKey.hasSuffix(".weight") && v.ndim == 3 {
-@@ -628,7 +700,7 @@ nonisolated public class Qwen3TTSAudioEncoder: Module {
+@@ -628,7 +734,7 @@ nonisolated public class Qwen3TTSAudioEncoder: Module {
          let eps: Float = 1e-5
          for (basePath, data) in codebookData {
              if let clusterUsage = data["cluster_usage"],

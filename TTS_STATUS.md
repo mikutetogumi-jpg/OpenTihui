@@ -65,6 +65,8 @@ For iPhone diagnosis and lower peak graph pressure, the same narrow patch materi
 
 Real-device staged logs localized the next native termination to the residual-vector Quantizer. The package originally evaluated one semantic plus 31 acoustic codebooks and only afterward discarded all but the valid streams, while the Qwen3-TTS ICL talker consumes only `refCodes[0]`. The CI patch now evaluates only that required semantic codebook, materializes the projection and code indices separately, and records both boundaries. This preserves the exact ICL input used downstream while removing 31 unused codebook evaluations from the iPhone memory peak.
 
+The following real-device run completed the semantic projection but terminated inside MLX's 2048-wide `argMin` codebook reduction. The final short-reference nearest-neighbour search now runs on the CPU while the CNN, Transformer, and projection remain Metal-accelerated. It computes the same squared-L2 nearest code for each frame, avoids the iPhone Metal reduction limit, and adds only about 2 MB of temporary arrays for the tested model.
+
 ## Memory behavior
 
 - Loading TTS from the debug page explicitly unloads the active llama.cpp/GGUF model first.

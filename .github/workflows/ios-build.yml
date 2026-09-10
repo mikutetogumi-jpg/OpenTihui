@@ -50,6 +50,14 @@ jobs:
             -skipPackagePluginValidation \
             2>&1 | tee package-resolve.log
 
+      - name: Apply Qwen3-TTS 0.2.0 ICL loader compatibility patch
+        run: |
+          set -euxo pipefail
+          PACKAGE_DIR='build-ci/SourcePackages/checkouts/mlx-swift-qwen3-tts'
+          test -d "$PACKAGE_DIR"
+          git -C "$PACKAGE_DIR" apply --check "$GITHUB_WORKSPACE/patches/qwen3tts-0.2.0-icl-loader.patch"
+          git -C "$PACKAGE_DIR" apply "$GITHUB_WORKSPACE/patches/qwen3tts-0.2.0-icl-loader.patch"
+
       - name: Build unsigned device app
         run: |
           set -o pipefail

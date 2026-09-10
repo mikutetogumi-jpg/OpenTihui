@@ -59,6 +59,8 @@ Test model: `mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit`. The real-device smoke
 
 The initial speaker-embedding path crashes inside the package's MLX FFT on the tested iPhone. The debug path therefore uses the package's existing ICL reference-audio encoder, which bypasses that Speaker Encoder FFT without replacing any MLX inference code.
 
+The pinned 0.2.0 package also expects obsolete speech-tokenizer codebook keys (`_codebook.embedding_sum`) while the current official model uses `codebook.embed_sum` plus an inference-irrelevant `initialized` value. A narrow CI-applied patch corrects those mappings and the downsample convolution path before Xcode builds the package. The package version remains pinned at 0.2.0 and the patch is validated with `git apply --check` on every build.
+
 ## Memory behavior
 
 - Loading TTS from the debug page explicitly unloads the active llama.cpp/GGUF model first.
